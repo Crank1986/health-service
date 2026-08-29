@@ -1,0 +1,7 @@
+services:
+  my-app:
+    build: ./
+    image: artemprotchenko/myapp:latest
+    command: ./server
+    ports:
+      - 8000:8000
