@@ -1,0 +1,15 @@
+persistence:
+  enabled: true
+  storageClass: standard
+  size: 1Gi
+auth:
+  username: postgres
+  existingSecret: postgres-credentials
+customUser:
+  name: user_app
+  database: users_db
+  existingSecret: postgres-credentials
+  secretKeys:
+    name: ""
+    database: ""
+    password: CUSTOM_PASSWORD

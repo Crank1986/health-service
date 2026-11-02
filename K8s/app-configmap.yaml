@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: users-app-config
+  namespace: hs
+data:
+  DB_HOST: "users-db-postgres"
+  DB_PORT: "5432"
+  DB_NAME: "users_db"

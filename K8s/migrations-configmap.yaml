@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: users-migrations
+  namespace: hs
+data:
+  001_create_users.sql: |-
+    CREATE TABLE users (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(200) NOT NULL,
+        email VARCHAR(200) NOT NULL UNIQUE
+    );

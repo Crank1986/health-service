@@ -4,6 +4,7 @@ metadata:
   name: health-service
   labels:
     app: health-service
+  namespace: hs
 spec:
   replicas: 2
   minReadySeconds: 10
@@ -14,15 +15,29 @@ spec:
     type: RollingUpdate
   selector:
     matchLabels:
-      env: dev
+      env: health-service-env
   template:
     metadata:
       labels:
-        env: dev
+        env: health-service-env
     spec:
       containers:
       - name: health-app
-        image: artemprotchenko/myapp:latest
+        image: artemprotchenko/myapp:users-update-v1
+        envFrom:
+          - configMapRef:
+              name: users-app-config
+        env:
+          - name: DB_USER
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: CUSTOM_USER
+          - name: DB_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: postgres-credentials
+                key: CUSTOM_PASSWORD
         ports:
         - containerPort: 8000
         livenessProbe:

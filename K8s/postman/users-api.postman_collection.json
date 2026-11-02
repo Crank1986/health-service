@@ -1,0 +1,306 @@
+{
+  "info": {
+    "_postman_id": "e2accfb2-21b5-4067-b957-722271f96bca",
+    "name": "New Collection",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "59388878",
+    "_collection_link": "https://go.postman.co/collection/59388878-e2accfb2-21b5-4067-b957-722271f96bca?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "01 — Health",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Объявляем проверку: сервер должен вернуть HTTP-статус 200.\npm.test(\"HTTP-статус — 200\", function () {\n    pm.response.to.have.status(200);\n});\n\n// Проверяем содержимое ответа, а не только успешный HTTP-статус.\npm.test(\"Приложение сообщает status: OK\", function () {\n    // Разбираем JSON ответа и сохраняем его в переменную body.\n    const body = pm.response.json();\n\n    // Проверка пройдёт, только если поле status равно строке \"OK\".\n    pm.expect(body.status).to.equal(\"OK\");\n});"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": false,
+        "followRedirects": true,
+        "maxResponseSize": 52428800,
+        "protocolVersion": "auto",
+        "strictSSL": false
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/health/",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "health",
+            ""
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "02 — Create user",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Генерируем уникальный адрес перед отправкой запроса.\nconst email = \"postman.\" + pm.variables.replaceIn(\"{{$guid}}\") + \"@example.com\";\n\n// Сохраняем email в коллекции: он понадобится для последующих проверок.\npm.collectionVariables.set(\"test_email\", email);\n\n// Убираем старый ID, чтобы при ошибке создания не использовать прежнюю карточку.\npm.collectionVariables.unset(\"user_id\");"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Проверяем, что сервер подтвердил создание пользователя.\npm.test(\"Пользователь создан — 201\", function () {\n    pm.response.to.have.status(201);\n});\n\n// Проверяем карточку и запоминаем её ID только при успешном создании.\nif (pm.response.code === 201) {\n    const user = pm.response.json();\n\n    pm.test(\"Ответ содержит положительный целочисленный ID\", function () {\n        pm.expect(user.id).to.be.a(\"number\");\n        pm.expect(Number.isInteger(user.id)).to.equal(true);\n        pm.expect(user.id).to.be.above(0);\n    });\n\n    pm.test(\"Имя и email совпадают с отправленными\", function () {\n        pm.expect(user.name).to.equal(\"Postman Test\");\n        pm.expect(user.email).to.equal(\n            pm.collectionVariables.get(\"test_email\")\n        );\n    });\n\n    // Запоминаем номер карточки для GET, PATCH и DELETE.\n    pm.collectionVariables.set(\"user_id\", user.id);\n}"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": false,
+        "followRedirects": true,
+        "maxResponseSize": 52428800,
+        "protocolVersion": "auto",
+        "strictSSL": false
+      },
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Postman Test\",\n  \"email\": \"{{test_email}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/users",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "users"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "03 — Get user",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Проверяем, что сервер нашёл пользователя.\npm.test(\"Пользователь найден — 200\", function () {\n    pm.response.to.have.status(200);\n});\n\n// Проверяем данные только при успешном ответе.\nif (pm.response.code === 200) {\n    // Разбираем JSON с карточкой, прочитанной из базы.\n    const user = pm.response.json();\n\n    // Переменная может храниться как строка, поэтому приводим ID к числу.\n    const expectedId = Number(pm.collectionVariables.get(\"user_id\"));\n\n    pm.test(\"Получен пользователь с нужным ID\", function () {\n        pm.expect(user.id).to.equal(expectedId);\n    });\n\n    pm.test(\"Имя и email сохранились правильно\", function () {\n        pm.expect(user.name).to.equal(\"Postman Test\");\n        pm.expect(user.email).to.equal(\n            pm.collectionVariables.get(\"test_email\")\n        );\n    });\n}"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": false,
+        "followRedirects": true,
+        "maxResponseSize": 52428800,
+        "protocolVersion": "auto",
+        "strictSSL": false
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/users/{{user_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "users",
+            "{{user_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "04 — Update user",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Проверяем, что сервер успешно выполнил обновление.\npm.test(\"Пользователь обновлён — 200\", function () {\n    pm.response.to.have.status(200);\n});\n\n// При успешном ответе разбираем обновлённую карточку.\nif (pm.response.code === 200) {\n    const user = pm.response.json();\n\n    // Читаем ID созданного пользователя и приводим его к числу.\n    const expectedId = Number(pm.collectionVariables.get(\"user_id\"));\n\n    pm.test(\"ID пользователя не изменился\", function () {\n        pm.expect(user.id).to.equal(expectedId);\n    });\n\n    pm.test(\"Имя изменилось, email сохранился\", function () {\n        pm.expect(user.name).to.equal(\"Postman Updated\");\n        pm.expect(user.email).to.equal(\n            pm.collectionVariables.get(\"test_email\")\n        );\n    });\n}"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": false,
+        "followRedirects": true,
+        "maxResponseSize": 52428800,
+        "protocolVersion": "auto",
+        "strictSSL": false
+      },
+      "request": {
+        "method": "PATCH",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Postman Updated\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{base_url}}/users/{{user_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "users",
+            "{{user_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "05 — Get updated user",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Проверяем, что сервер нашёл пользователя.\npm.test(\"Пользователь найден — 200\", function () {\n    pm.response.to.have.status(200);\n});\n\n// Проверяем данные только при успешном ответе.\nif (pm.response.code === 200) {\n    // Разбираем JSON с карточкой, прочитанной из базы.\n    const user = pm.response.json();\n\n    // Переменная может храниться как строка, поэтому приводим ID к числу.\n    const expectedId = Number(pm.collectionVariables.get(\"user_id\"));\n\n    pm.test(\"Получен пользователь с нужным ID\", function () {\n        pm.expect(user.id).to.equal(expectedId);\n    });\n\n    pm.test(\"Имя и email сохранились правильно\", function () {\n        // Проверяем, что новое имя сохранилось и читается отдельным запросом.\n        pm.expect(user.name).to.equal(\"Postman Updated\");\n        pm.expect(user.email).to.equal(\n            pm.collectionVariables.get(\"test_email\")\n        );\n    });\n}"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": false,
+        "followRedirects": true,
+        "maxResponseSize": 52428800,
+        "protocolVersion": "auto",
+        "strictSSL": false
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/users/{{user_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "users",
+            "{{user_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "06 — Delete user",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Проверяем, что сервер подтвердил удаление.\npm.test(\"Пользователь удалён — 204\", function () {\n    pm.response.to.have.status(204);\n});\n\n// Ответ 204 не должен содержать тело.\npm.test(\"Тело ответа пустое\", function () {\n    pm.expect(pm.response.text()).to.equal(\"\");\n});"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": false,
+        "followRedirects": true,
+        "maxResponseSize": 52428800,
+        "protocolVersion": "auto",
+        "strictSSL": false
+      },
+      "request": {
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/users/{{user_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "users",
+            "{{user_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "07 — Get deleted user",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Проверяем, что удалённая карточка больше не находится.\npm.test(\"Пользователь отсутствует — 404\", function () {\n    pm.response.to.have.status(404);\n});\n\n// Проверяем сообщение; trim убирает перевод строки в конце ответа.\npm.test(\"Сервер сообщил, что пользователь не найден\", function () {\n    pm.expect(pm.response.text().trim()).to.equal(\n        \"Пользователь не найден\"\n    );\n});"
+            ]
+          }
+        }
+      ],
+      "protocolProfileBehavior": {
+        "disableCookies": false,
+        "followRedirects": true,
+        "maxResponseSize": 52428800,
+        "protocolVersion": "auto",
+        "strictSSL": false
+      },
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/users/{{user_id}}",
+          "host": [
+            "{{base_url}}"
+          ],
+          "path": [
+            "users",
+            "{{user_id}}"
+          ]
+        }
+      },
+      "response": []
+    }
+  ],
+  "variable": [
+    {
+      "key": "test_email",
+      "value": "",
+      "type": "string"
+    },
+    {
+      "key": "base_url",
+      "value": "http://arch.homework",
+      "type": "string"
+    },
+    {
+      "key": "user_id",
+      "value": "",
+      "type": "string"
+    }
+  ]
+}
