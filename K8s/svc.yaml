@@ -3,11 +3,17 @@ kind: Service
 metadata:
   name: health-app-service
   namespace: hs
+  # Метка самого Service: по ней его найдёт ServiceMonitor.
+  labels:
+    app: health-service
 spec:
+  # Эти метки выбирают поды, которым Service направляет запросы.
   selector:
     env: health-service-env
   ports:
-    - protocol: TCP
+    # Имя порта: на него будет ссылаться ServiceMonitor.
+    - name: http
+      protocol: TCP
       port: 80
       targetPort: 8000
   type: ClusterIP

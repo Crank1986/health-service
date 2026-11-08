@@ -12,12 +12,175 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+// httpRequestDuration хранит распределение длительности запросов.
+var httpRequestDuration = prometheus.NewHistogramVec(
+	prometheus.HistogramOpts{
+		// Имя метрики содержит единицу измерения - секунды.
+		Name: "http_request_duration_seconds",
+		// Описание метрики для строки в # HELP.
+		Help: "HTTP request duration in seconds.",
+		//Верхние границы корзин в секундах: от 1мс до 10 секунд.
+		Buckets: []float64{
+			0.001, 0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10,
+		},
+	},
+	// Для каждого HTTP-метода и шаблона маршрута будет своя гистограмма.
+	[]string{"method", "route"},
+)
+
+// httpRequestDurationMax показывает максимальную длительность
+// обработки запроса с момента запуска процесса.
+var httpRequestDurationMax = prometheus.NewGaugeVec(
+	prometheus.GaugeOpts{
+		Name: "http_request_duration_max_seconds",
+		Help: "Maximum HTTP request duration since process start in seconds.",
+	},
+	// Для каждого метода и маршрута храим отдельный максимум
+	[]string{"method", "route"},
+)
+
+// Ключ обозначает конкретную пару: HTTP-метод и шаблон маршрута.
+type requestMetricKey struct {
+	method string
+	route  string
+}
+
+// Для каждой пары храним одно число — максимальную длительность.
+var requestDurationMaxValues = make(map[requestMetricKey]float64)
+
+// Защищаем совместное чтение и обновление рекордов.
+var requestDurationMaxMu sync.Mutex
+
+func observeRequestDurationMax(method, route string, duration float64) {
+	key := requestMetricKey{
+		method: method,
+		route:  route,
+	}
+
+	// Только один запрос за раз может проверять и обновлять рекорд.
+	requestDurationMaxMu.Lock()
+
+	// Освободим замок при выходе из функции, включая ранний return.
+	defer requestDurationMaxMu.Unlock()
+
+	previous, exists := requestDurationMaxValues[key]
+
+	// Если рекорд уже есть и новое время не больше — ничего не меняем.
+	if exists && duration <= previous {
+		return
+	}
+
+	// Запоминаем новый рекорд и показываем его в метрике Prometheus.
+	requestDurationMaxValues[key] = duration
+	httpRequestDurationMax.WithLabelValues(method, route).Set(duration)
+}
+
+// httpRequestsTotal хранит счётчики запросов для разных сочетаний меток.
+var httpRequestsTotal = prometheus.NewCounterVec(
+	prometheus.CounterOpts{
+		// Name — имя метрики; суффикс _total обозначает накопительный счётчик.
+		Name: "http_requests_total",
+		// Help — описание, которое появится в строке # HELP.
+		Help: "Total number of HTTP requests.",
+	},
+	// Метки разделяют счётчики по HTTP-методу, шаблону маршрута и статусу ответа.
+	[]string{"method", "route", "status"},
+)
+
+// responseRecorder передаёт ответ клиенту и хранит его HTTP-статус.
+type responseRecorder struct {
+	// Встраиваем исходный ResponseWriter, через который отправляется ответ.
+	http.ResponseWriter
+
+	// status хранит код ответа для последующего учёта в метриках.
+	status int
+}
+
+// WriteHeader запоминает итоговый статус и передаёт его клиенту.
+func (rec *responseRecorder) WriteHeader(code int) {
+	// Если итоговый статус уже отправлен, повторный вызов его не изменит.
+	// Выходим, чтобы сохранить первый статус.
+	if rec.status != 0 {
+		return
+	}
+
+	// Ответы 1xx — промежуточные: передаём их, но не считаем итоговым статусом.
+	if code >= 100 && code < 200 {
+		rec.ResponseWriter.WriteHeader(code)
+		return
+	}
+
+	// Запоминаем итоговый статус для метрик этого запроса.
+	rec.status = code
+
+	// Отправляем статус через исходный ResponseWriter.
+	rec.ResponseWriter.WriteHeader(code)
+}
+
+// Write отправляет тело ответа и учитывает неявный статус 200.
+func (rec *responseRecorder) Write(data []byte) (int, error) {
+	// Если итогового статуса ещё нет, устанавливаем 200 через наш метод.
+	// Он одновременно запомнит статус и передаст его исходному ResponseWriter.
+	if rec.status == 0 {
+		rec.WriteHeader(http.StatusOK)
+	}
+
+	// Передаём тело исходному ResponseWriter.
+	// Возвращаем вызывающему коду число записанных байтов и возможную ошибку.
+	return rec.ResponseWriter.Write(data)
+}
+
+// metricsMiddleware оборачивает обработчик и считает завершённые запросы.
+// route — шаблон маршрута, next — обработчик, который выполнит работу.
+func metricsMiddleware(route string, next http.HandlerFunc) http.HandlerFunc {
+	// Возвращаем новую функцию: её сервер будет вызывать для каждого запроса.
+	return func(w http.ResponseWriter, r *http.Request) {
+		// Создаём отдельную обёртку для этого запроса.
+		// Внутрь кладём исходный w; status первоначально равен 0.
+		rec := &responseRecorder{
+			ResponseWriter: w,
+		}
+
+		// Запоминаем момент начала обработки запроса.
+		started := time.Now()
+
+		// Выполняем обработчик: проверку данных, работу с БД и запись ответа.
+		next(rec, r)
+
+		// Вычисляем прошедшее время и переводим его в секунды.
+		duration := time.Since(started).Seconds()
+
+		// Observe добавляет измеренную длительность в её статистику.
+		// Записываем длительность в гистограмму нужно операции API.
+		httpRequestDuration.WithLabelValues(r.Method, route).Observe(duration)
+
+		// Проверяем, стал ли этот запрос новым рекордом длительности.
+		observeRequestDurationMax(r.Method, route, duration)
+
+		// Если обработчик ничего не записал, обычный ответ Go будет иметь статус 200.
+		if rec.status == 0 {
+			rec.status = http.StatusOK
+		}
+
+		// Выбираем счётчик по методу, шаблону маршрута и итоговому статусу.
+		// Itoa превращает числовой статус в строку; Inc увеличивает счётчик на 1.
+		httpRequestsTotal.WithLabelValues(
+			r.Method,
+			route,
+			strconv.Itoa(rec.status),
+		).Inc()
+	}
+}
 
 // User хранит данные пользователя; JSON-теги задают имена полей HTTP-ответа.
 type User struct {
@@ -329,6 +492,15 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	// Подключаем семейство счётчиков к стандартному реестру Prometheus.
+	// Его содержимое выдаёт уже добавленный promhttp.Handler().
+	// Регистрируем метрики, которые будет отдавать обработчик /metrics.
+	prometheus.MustRegister(
+		httpRequestsTotal,
+		httpRequestDuration,
+		httpRequestDurationMax,
+	)
+
 	// Kubernetes передаёт настройки из ConfigMap и Secret в окружение контейнера.
 	// Go читает обычные переменные окружения, не обращаясь к Kubernetes API.
 	dbHost := os.Getenv("DB_HOST")
@@ -377,21 +549,54 @@ func main() {
 
 	defer pool.Close() // Закрываем пул при обычном выходе из main.
 	fmt.Println("Соединение с PostgreSQL проверено")
+
 	// Функция-посредник передаёт обработчику уже созданный пул, не создавая новый на каждый запрос.
-	http.HandleFunc("GET /users/{id}", func(w http.ResponseWriter, r *http.Request) {
-		handler(w, r, pool)
-	})
-	http.HandleFunc("POST /users", func(w http.ResponseWriter, r *http.Request) {
-		createUserHandler(w, r, pool)
-	})
-	http.HandleFunc("DELETE /users/{id}", func(w http.ResponseWriter, r *http.Request) {
-		deleteUserHandler(w, r, pool)
-	})
-	http.HandleFunc("PATCH /users/{id}", func(w http.ResponseWriter, r *http.Request) {
-		updateUserHandler(w, r, pool)
-	})
+	// Подключаем подсчёт запросов к чтению пользователя.
+	http.HandleFunc("GET /users/{id}", metricsMiddleware(
+		// Все ID объединяем под одним шаблоном маршрута.
+		"/users/{id}",
+		// Передаём функцию чтения как задание для обёртки.
+		func(w http.ResponseWriter, r *http.Request) {
+			// Вызываем существующий обработчик с доступом к БД.
+			handler(w, r, pool)
+		},
+	))
+
+	// Регистрируем создание пользователя через обёртку подсчёта запросов.
+	http.HandleFunc("POST /users", metricsMiddleware(
+		// Для метрики передаём шаблон пути; HTTP-метод обёртка возьмёт из запроса.
+		"/users",
+		// Эта функция станет параметром next внутри metricsMiddleware.
+		func(w http.ResponseWriter, r *http.Request) {
+			// Передаём запрос и доступ к БД существующему обработчику создания.
+			createUserHandler(w, r, pool)
+		},
+	))
+
+	// Регистрируем удаление пользователя через обёртку подсчёта запросов.
+	http.HandleFunc("DELETE /users/{id}", metricsMiddleware(
+		// Для метрики передаём шаблон пути; HTTP-метод обёртка возьмёт из запроса.
+		"/users/{id}",
+		// Передаём функцию удаления как задание для обёртки.
+		func(w http.ResponseWriter, r *http.Request) {
+			// Вызываем существующий обработчик с доступом к БД.
+			deleteUserHandler(w, r, pool)
+		},
+	))
+
+	// Регистрируем обновление пользователя через обёртку подсчёта запросов.
+	http.HandleFunc("PATCH /users/{id}", metricsMiddleware(
+		// Все ID объединяем под одним шаблоном маршрута.
+		"/users/{id}",
+		// Передаём функцию обновления пользователя как задание для обёртки.
+		func(w http.ResponseWriter, r *http.Request) {
+			// Вызываем существующий обработчик с доступом к БД.
+			updateUserHandler(w, r, pool)
+		},
+	))
 	http.HandleFunc("/health/", healthHandler)
 	fmt.Println("Сервер запущен на :8000")
+	http.Handle("GET /metrics", promhttp.Handler())
 	// Вызов обслуживает HTTP-запросы и блокирует дальнейшее выполнение main до ошибки сервера.
 	err = http.ListenAndServe(":8000", nil)
 	if err != nil {
