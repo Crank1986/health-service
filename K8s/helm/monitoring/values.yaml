@@ -1,0 +1,54 @@
+prometheus:
+  prometheusSpec:
+    # Храним историю метрик за последние три дня.
+    retention: 3d
+
+    # Забираем показания у источников каждые 15 секунд.
+    scrapeInterval: 15s
+
+    # Проверяем правила Prometheus каждые 15 секунд.
+    evaluationInterval: 15s
+
+    # Храним историю метрик на постоянном томе.
+    storageSpec:
+      # Шаблон заявки на диск для экземпляра Prometheus.
+      volumeClaimTemplate:
+        spec:
+          # Используем класс хранения Minikube, как для PostgreSQL.
+          storageClassName: standard
+
+          # Том можно подключать для записи с одного узла Kubernetes.
+          accessModes:
+            - ReadWriteOnce
+
+          # Запрашиваем том объёмом 5 GiB.
+          resources:
+            requests:
+              storage: 5Gi
+
+grafana:
+  # Включаем постоянный том для настроек и сохранённых дашбордов.
+  persistence:
+    enabled: true
+    type: pvc
+
+    # Используем класс хранения Minikube.
+    storageClassName: standard
+
+    # Разрешаем подключение тома для записи с одного узла.
+    accessModes:
+      - ReadWriteOnce
+
+    # Запрашиваем 1 GiB для данных Grafana.
+    size: 1Gi
+
+# Не собираем метрики управляющих компонентов,
+# доступные только через loopback узла Minikube.
+kubeEtcd:
+  enabled: false
+
+kubeControllerManager:
+  enabled: false
+
+kubeScheduler:
+  enabled: false
