@@ -21,19 +21,28 @@ spec:
                 secretKeyRef:
                   name: postgres-credentials
                   key: CUSTOM_PASSWORD
-          command: ["psql"]
+          command: ["/bin/sh", "-c"]
           args:
-            - "-h"
-            - "users-db-postgres"
-            - "-U"
-            - "user_app"
-            - "-d"
-            - "users_db"
-            - "-w"
-            - "-v"
-            - "ON_ERROR_STOP=1"
-            - "-f"
-            - "/migrations/001_create_users.sql"
+            - |
+              printf '{"time":"%s","level":"INFO","service":"users-migration","event":"migration_started","migration":"001_create_users"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+
+              psql \
+                -h "users-db-postgres" \
+                -U "user_app" \
+                -d "users_db" \
+                -w \
+                -v ON_ERROR_STOP=1 \
+                -f /migrations/001_create_users.sql
+
+              result=$?
+
+              if [ "$result" -eq 0 ]; then
+                printf '{"time":"%s","level":"INFO","service":"users-migration","event":"migration_completed","migration":"001_create_users"}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              else
+                printf '{"time":"%s","level":"ERROR","service":"users-migration","event":"migration_failed","migration":"001_create_users","exit_code":%s}\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$result"
+              fi
+
+              exit "$result"
       volumes:
         - name: migration-sql
           configMap:
