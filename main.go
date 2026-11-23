@@ -6,13 +6,16 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -138,6 +141,26 @@ func (rec *responseRecorder) Write(data []byte) (int, error) {
 	// Передаём тело исходному ResponseWriter.
 	// Возвращаем вызывающему коду число записанных байтов и возможную ошибку.
 	return rec.ResponseWriter.Write(data)
+}
+
+// loggingMiddleware записывает входящий запрос и передаёт его дальше
+func loggingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// RemoteAddr содержит адрес непосредственного отправителя: IP и порт
+		// Отделяем IP; порт тут не нужен
+		peerIP, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			peerIP = r.RemoteAddr
+		}
+		// Записываем факт получения запроса до выполнения обработчика
+		slog.Info("Входящий HTTP-запрос",
+			"event", "http_request_received",
+			"method", r.Method,
+			"path", r.URL.Path,
+			"peer_ip", peerIP,
+		)
+		next.ServeHTTP(w, r)
+	})
 }
 
 // metricsMiddleware оборачивает обработчик и считает завершённые запросы.
@@ -279,9 +302,16 @@ func decodeUpdateUser(r *http.Request) (UpdateUserRequest, error) {
 func createUserHandler(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
 	input, err := decodeCreateUser(r)
 	if err != nil {
+		// Данные не прошли проверку, запись в БД не появилась
+		slog.Warn("Некорректные данные для создания пользователя",
+			"event", "validation_failed",
+			"operation", "create_user",
+			"reason", err.Error(),
+		)
 		http.Error(w, err.Error(), http.StatusBadRequest)
-		return // После отказа клиенту прекращаем обработку, не выполняя INSERT.
+		return
 	}
+
 	// Передаём значения отдельно от SQL; ID назначает база данных.
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -295,18 +325,40 @@ func createUserHandler(w http.ResponseWriter, r *http.Request, pool *pgxpool.Poo
 	// Код 23505 означает нарушение UNIQUE. Отвечаем понятной ошибкой клиенту.
 	var pgErr *pgconn.PgError
 	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		slog.Warn("Email уже зарегистрирован",
+			"event", "user_email_conflict",
+			"operation", "create_user",
+		)
 		http.Error(w, "учётная запись с данным email уже зарегистрирована", http.StatusConflict)
 		return
 	}
 	if err != nil {
-		fmt.Println("Ошибка создания пользователя:", err)
+		// Операция создания не удалась из за ошибки БД
+		slog.Error("Ошибка создания пользователя",
+			"event", "database_operation_failed",
+			"operation", "create_user",
+			"error", err.Error(),
+		)
 		http.Error(w, "Внутренняя ошибка сервера", http.StatusInternalServerError)
 		return
 	}
 
+	// INSERT завершился успешно, БД вернула ID созданной записи
+	slog.Info("Пользователь создан",
+		"event", "user_created",
+		"operation", "create_user",
+		"user_id", user.ID,
+	)
+
 	// Сначала готовим JSON, затем отправляем статус 201 и тело ответа.
 	data, err := json.Marshal(user)
 	if err != nil {
+		slog.Error("Не удалось сформировать JSON-ответ",
+			"event", "response_encoding_failed",
+			"operation", "create_user",
+			"user_id", user.ID,
+			"error", err.Error(),
+		)
 		http.Error(w, "Внутренняя ошибка сервера", http.StatusInternalServerError)
 		return
 	}
@@ -320,6 +372,12 @@ func createUserHandler(w http.ResponseWriter, r *http.Request, pool *pgxpool.Poo
 func deleteUserHandler(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil || id <= 0 {
+		slog.Warn("Некорректный ID пользователя",
+			"event", "validation_failed",
+			"operation", "delete_user",
+			"field", "id",
+			"reason", "expected_positive_integer",
+		)
 		http.Error(w, "ID должен быть положительным целым числом", http.StatusBadRequest)
 		return
 	}
@@ -335,14 +393,30 @@ func deleteUserHandler(w http.ResponseWriter, r *http.Request, pool *pgxpool.Poo
 
 	// RETURNING не вернул строку — пользователя с таким ID не было.
 	if errors.Is(err, pgx.ErrNoRows) {
+		slog.Info("Пользователь не найден",
+			"event", "user_not_found",
+			"operation", "delete_user",
+			"user_id", id,
+		)
 		http.Error(w, "Пользователь не найден", http.StatusNotFound)
 		return
 	}
 	if err != nil {
-		fmt.Println("Ошибка удаления пользователя:", err)
+		slog.Error("Ошибка удаления пользователя",
+			"event", "database_operation_failed",
+			"operation", "delete_user",
+			"user_id", id,
+			"error", err.Error(),
+		)
 		http.Error(w, "Внутренняя ошибка сервера", http.StatusInternalServerError)
 		return
 	}
+	// DELETE завершился успешно и вернул корректный ID
+	slog.Info("Пользователь удалён",
+		"event", "user_deleted",
+		"operation", "delete_user",
+		"user_id", deletedID,
+	)
 	// Удаление успешно. Статус 204 отправляется без тела ответа.
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -356,6 +430,13 @@ func updateUserHandler(w http.ResponseWriter, r *http.Request, pool *pgxpool.Poo
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	// Если текст не удалось преобразовать ИЛИ число неположительное, отклоняем запрос.
 	if err != nil || id <= 0 {
+		// до обращения к БД отклоняем некорректный ID
+		slog.Warn("Некорректный ID пользователя",
+			"event", "validation_failed",
+			"operation", "update_user",
+			"field", "id",
+			"reason", "expected_positive_integer",
+		)
 		// Отправляем клиенту статус 400 и объяснение ошибки.
 		http.Error(w, "ID должен быть положительным целым числом", http.StatusBadRequest)
 		// Завершаем обработчик, чтобы не продолжать работу с неверным ID.
@@ -367,6 +448,13 @@ func updateUserHandler(w http.ResponseWriter, r *http.Request, pool *pgxpool.Poo
 	input, err := decodeUpdateUser(r)
 	// Если проверка JSON или его полей не прошла, до базы запрос не допускаем.
 	if err != nil {
+		// ID корректен, но данные для изменения не прошли проверку
+		slog.Warn("Некорректные данные для обновлениия пользователя",
+			"event", "validation_failed",
+			"operation", "update_user",
+			"user_id", id,
+			"reason", err.Error(),
+		)
 		// Отправляем статус 400 с текстом ошибки проверки и завершаем обработчик.
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -400,6 +488,11 @@ func updateUserHandler(w http.ResponseWriter, r *http.Request, pool *pgxpool.Poo
 
 	// Если UPDATE не нашёл строку с таким ID, возвращать карточку нечего.
 	if errors.Is(err, pgx.ErrNoRows) {
+		slog.Info("Пользователь не найден",
+			"event", "user_not_found",
+			"operation", "update_user",
+			"user_id", id,
+		)
 		http.Error(w, "Пользователь не найден", http.StatusNotFound)
 		return
 	}
@@ -412,6 +505,11 @@ func updateUserHandler(w http.ResponseWriter, r *http.Request, pool *pgxpool.Poo
 	if errors.As(err, &pgErr) &&
 		pgErr.Code == "23505" &&
 		pgErr.ConstraintName == "users_email_key" {
+		slog.Warn("Email уже зарегистрирован",
+			"event", "user_email_conflict",
+			"operation", "update_user",
+			"user_id", id,
+		)
 		http.Error(w, "учётная запись с данным email уже зарегистрирована", http.StatusConflict)
 		return
 	}
@@ -419,16 +517,33 @@ func updateUserHandler(w http.ResponseWriter, r *http.Request, pool *pgxpool.Poo
 	// Любая оставшаяся ошибка означает, что операцию не удалось выполнить.
 	// Подробности пишем в логи, клиенту отправляем общее сообщение.
 	if err != nil {
-		fmt.Println("Ошибка обновления пользователя: ", err)
+		slog.Error("Ошибка обновления пользователя",
+			"event", "database_operation_failed",
+			"operation", "update_user",
+			"user_id", id,
+			"error", err.Error(),
+		)
 		http.Error(w, "Внутренняя ошибка сервера", http.StatusInternalServerError)
 		return
 	}
 
+	// UPDATE завершился успешно и вернул обновлённую запись
+	slog.Info("Пользователь обновлён",
+		"event", "user_updated",
+		"operation", "update_user",
+		"user_id", user.ID,
+	)
+
 	// Преобразуем обновлённую карточку в JSON для ответа клиенту.
 	data, err := json.Marshal(user)
-
 	// Если сформировать JSON не получилось, возвращаем 500.
 	if err != nil {
+		slog.Error("Не удалось сформировать JSON-ответ",
+			"event", "response_encoding_failed",
+			"operation", "update_user",
+			"user_id", user.ID,
+			"error", err.Error(),
+		)
 		http.Error(w, "Внутрення ошибка сервера", http.StatusInternalServerError)
 		return
 	}
@@ -444,6 +559,13 @@ func handler(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
 	idText := r.PathValue("id")
 	id, err := strconv.ParseInt(idText, 10, 64)
 	if err != nil || id <= 0 {
+		// Запро сотклонён из за некорректно ID, до обращения к БД
+		slog.Warn("Некорректный ID пользователя",
+			"event", "validation_failed",
+			"operation", "get_user",
+			"field", "id",
+			"reason", "expected_positive_integer",
+		)
 		http.Error(w, "ID должен быть положительным, целым числом", http.StatusBadRequest)
 		return
 	}
@@ -462,20 +584,43 @@ func handler(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
 
 	// Отсутствующая запись — это 404, а не сбой базы данных.
 	if errors.Is(err, pgx.ErrNoRows) {
+		slog.Info("Пользователь не найден",
+			"event", "user_not_found",
+			"operation", "get_user",
+			"user_id", id,
+		)
 		http.Error(w, "Пользователь не найден", http.StatusNotFound)
 		return
 	}
 
 	// Подробности сбоя оставляем в логах, клиенту возвращаем общее сообщение.
 	if err != nil {
-		fmt.Println("Ошибка получения пользователя:", err)
+		slog.Error("Ошибка получения пользователя",
+			"event", "database_operation_failed",
+			"operation", "get_user",
+			"user_id", id,
+			"error", err.Error(),
+		)
 		http.Error(w, "Внутреннеяя ошибка сервера", http.StatusInternalServerError)
 		return
 	}
 
+	// БД успешно вернула найденного пользователя
+	slog.Info("Пользователь получен",
+		"event", "user_read",
+		"operation", "get_user",
+		"user_id", user.ID,
+	)
+
 	// Превращаем найденную запись в JSON и задаём тип ответа до записи его тела.
 	data, err := json.Marshal(user)
 	if err != nil {
+		slog.Error("Не удалось сформировать JSON-ответ",
+			"event", "response_encoding_failed",
+			"operation", "get_user",
+			"user_id", user.ID,
+			"error", err.Error(),
+		)
 		http.Error(w, "Error", http.StatusInternalServerError)
 		return
 	}
@@ -492,6 +637,18 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
+	// Формируем каждую запись лога как JSON и выводим в stdout.
+	logHandler := slog.NewJSONHandler(os.Stdout, nil)
+
+	// Добавляем имя сервиса ко всем записям этого логгера
+	logger := slog.New(logHandler).With("service", "health-service")
+
+	// Делаем логгер обищим для вызовов slog.info, slog.Warn и skog.Error.
+	slog.SetDefault(logger)
+
+	// Отмечаем начало запуска: подклчение к БД ещё предстоит проверить
+	slog.Info("Запуск приложения", "event", "application_starting")
+
 	// Подключаем семейство счётчиков к стандартному реестру Prometheus.
 	// Его содержимое выдаёт уже добавленный promhttp.Handler().
 	// Регистрируем метрики, которые будет отдавать обработчик /metrics.
@@ -511,7 +668,7 @@ func main() {
 	// Не запускаем сервер без обязательных настроек. Значения паролей не выводим.
 	if dbHost == "" || dbPort == "" || dbName == "" ||
 		dbUser == "" || dbPassword == "" {
-		fmt.Println("Ошибка: не заданы обязательные настройки подключения к БД")
+		slog.Error("Не заданы обязательные настройки подключения к БД", "event", "configuration_invalid")
 		os.Exit(1)
 	}
 	// Собираем URL с корректным кодированием специальных символов в учётных данных.
@@ -525,7 +682,7 @@ func main() {
 	// Разбор настроек ещё не проверяет, доступна ли база и подходит ли пароль.
 	poolConfig, err := pgxpool.ParseConfig(dbUrl.String())
 	if err != nil {
-		fmt.Println("Ощибка: некорректные настройки подключения к БД")
+		slog.Error("Некорректные настройки подключения к БД", "event", "database_configuration_invalid")
 		os.Exit(1)
 	}
 	// Каждый экземпляр приложения переиспользует свой пул максимум из пяти соединений.
@@ -533,7 +690,7 @@ func main() {
 	pool, err := pgxpool.NewWithConfig(context.Background(), poolConfig)
 
 	if err != nil {
-		fmt.Println("Ошибка: не удалось создать пул соединений")
+		slog.Error("Не удалось создать пул соединений", "event", "database_pool_failed")
 		os.Exit(1)
 	}
 	// Реально проверяем соединение перед запуском HTTP-сервера, ожидая не более пяти секунд.
@@ -542,13 +699,13 @@ func main() {
 	cancel() // Освобождаем ресурсы контекста проверки; сам пул остаётся работать.
 
 	if err != nil {
-		fmt.Println("Ошибка: не удалось подключиться к PostgreSql")
-		pool.Close() // os.Exit не выполняет defer, поэтому здесь закрываем пул явно.
+		slog.Error("Не удалось подключиться к PostgreSQL", "event", "database_connection_failed")
+		pool.Close() // os.Exit не выполняет defer, поэтому здесь за                                            крываем пул явно.
 		os.Exit(1)
 	}
 
 	defer pool.Close() // Закрываем пул при обычном выходе из main.
-	fmt.Println("Соединение с PostgreSQL проверено")
+	slog.Info("Соединение с PostgreSQL проверено", "event", "database_connected")
 
 	// Функция-посредник передаёт обработчику уже созданный пул, не создавая новый на каждый запрос.
 	// Подключаем подсчёт запросов к чтению пользователя.
@@ -595,11 +752,78 @@ func main() {
 		},
 	))
 	http.HandleFunc("/health/", healthHandler)
-	fmt.Println("Сервер запущен на :8000")
 	http.Handle("GET /metrics", promhttp.Handler())
-	// Вызов обслуживает HTTP-запросы и блокирует дальнейшее выполнение main до ошибки сервера.
-	err = http.ListenAndServe(":8000", nil)
-	if err != nil {
-		fmt.Println("Ошибка:", err)
+
+	//создаём сервер с адресом и обработчиком запросов
+	server := &http.Server{
+		Addr:    ":8000",
+		Handler: loggingMiddleware(http.DefaultServeMux),
 	}
+
+	// Сообщаем о попытке запуска, а не о подтверждённой готовности
+	slog.Info("Запуск HTTP-сервера",
+		"event", "http_server_starting",
+		"address", server.Addr,
+	)
+
+	// При SIGINT или SIGTERM этот контекст будет отменён
+	stopCtx, stop := signal.NotifyContext(
+		context.Background(),
+		os.Interrupt,
+		syscall.SIGTERM,
+	)
+
+	// Освобождаем реусры подписки при выходе из main
+	defer stop()
+
+	// Канал может хранить один результат типа error
+	serverErrors := make(chan error, 1)
+
+	// Запускаем обслуживание запросов в gorutine
+	go func() {
+		// После завершения сервера отправляем его результат в канал
+		serverErrors <- server.ListenAndServe()
+	}()
+
+	// Ждём одного из двух событий: завершения сервера или сигнала
+	select {
+	case err = <-serverErrors:
+		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			slog.Error("Ошибка HTTP-Сервера",
+				"event", "http_server_failed",
+				"error", err.Error(),
+			)
+			pool.Close() // Перед os.Exit явно закрываем пул
+			os.Exit(1)
+		}
+		return
+
+	case <-stopCtx.Done():
+		slog.Info("Начинаем остановку приложения",
+			"event", "application_stopping",
+		)
+	}
+
+	// Снимаем подписку: повторный Ctrl+C сможет прервать ожидание
+	stop()
+
+	// Даём текущим запросам до 10 секунд на завершение
+	shutdownCtx, cancelShutdown := context.WithTimeout(
+		context.Background(),
+		10*time.Second,
+	)
+	defer cancelShutdown()
+
+	if err := server.Shutdown(shutdownCtx); err != nil {
+		slog.Error("Не удалось штатно остановить HTTP-сервер",
+			"event", "http_server_shutdown_failed",
+			"error", err.Error(),
+		)
+		// Завершеаем процесс с ошибкой, оставшиеся соединения закроет ОС
+		os.Exit(1)
+	}
+
+	slog.Info("HTTP-сервер остановлен",
+		"event", "http_server_stopped",
+	)
 }

@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
       - name: health-app
-        image: artemprotchenko/myapp:metrics-v4
+        image: artemprotchenko/myapp:logging-v2
         envFrom:
           - configMapRef:
               name: users-app-config

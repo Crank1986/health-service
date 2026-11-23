@@ -1,6 +1,8 @@
-# Health Service — OTUS Microservices
+# Health Service - OTUS Microservices
 
 HTTP-сервис на Go: проверка здоровья и CRUD пользователей с хранением в PostgreSQL. Приложение разворачивается в Kubernetes, PostgreSQL устанавливается через Helm, таблица создаётся отдельным Job.
+
+Задание №6: [централизованное логирование - установка, проверки и скриншоты](docs/OTUS_LESSON_6_SUBMISSION.md). Приложение пишет JSON-логи, Fluent Bit отправляет их в Elasticsearch, Kibana показывает события приложения и миграций. Мониторинг из задания №5 для запуска EFK не требуется.
 
 ## Как устроено приложение
 
@@ -12,7 +14,7 @@ HTTP-сервис на Go: проверка здоровья и CRUD польз�
 
 Ingress задаёт правила HTTP-маршрутизации. Service направляет запросы к Pod приложения, Deployment поддерживает две реплики. Отдельный Job запускает `psql` для первоначального создания таблицы.
 
-Конфигурация подключения находится в ConfigMap, учётные данные — в Secret. Kubernetes передаёт их в окружение контейнера; Go читает переменные `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.
+Конфигурация подключения находится в ConfigMap, учётные данные - в Secret. Kubernetes передаёт их в окружение контейнера; Go читает переменные `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.
 
 Мониторинг описан в разделе [7. Мониторинг: Prometheus и Grafana](#7-мониторинг-prometheus-и-grafana): приложение и nginx Ingress Controller отдают метрики, Prometheus их собирает, Grafana строит дашборд и проверяет правила алертов.
 
@@ -36,7 +38,7 @@ nginx-ingress :10254/metrics ┘
 
 Поля пользователя: `id`, `name`, `email`. ID назначает БД через `SERIAL`; имя и email обязательны, email уникален. Пробелы по краям имени и email удаляются.
 
-PATCH сохраняет поля, которые не переданы. Пустые строки, `null`, пустой объект и неизвестные поля в PATCH отклоняются с `400`. Некорректный ID также даёт `400`; отсутствующий пользователь — `404`; занятый email — `409` с текстом `учётная запись с данным email уже зарегистрирована`.
+PATCH сохраняет поля, которые не переданы. Пустые строки, `null`, пустой объект и неизвестные поля в PATCH отклоняются с `400`. Некорректный ID также даёт `400`; отсутствующий пользователь - `404`; занятый email - `409` с текстом `учётная запись с данным email уже зарегистрирована`.
 
 ## Файлы
 
@@ -66,9 +68,9 @@ PATCH сохраняет поля, которые не переданы. Пус�
 
 ## Подготовка
 
-Инструкция рассчитана на macOS с Docker Desktop и Minikube с Docker-драйвером. Нужны Docker, Minikube, kubectl и Helm. Для Newman нужны Node.js LTS и npm; для локальной компиляции — Go версии из `go.mod`. При сборке Docker компилятор берётся из образа.
+Инструкция рассчитана на macOS с Docker Desktop и Minikube с Docker-драйвером. Нужны Docker, Minikube, kubectl и Helm. Для Newman нужны Node.js LTS и npm; для локальной компиляции - Go версии из `go.mod`. При сборке Docker компилятор берётся из образа.
 
-Версии компонентов проверенного окружения: Helm `4.2.4`, чарт PostgreSQL `0.21.2`, образ миграции `postgres:18.6`, образ приложения `artemprotchenko/myapp:metrics-v4`, чарт `kube-prometheus-stack` `92.17.0`, Grafana `13.3.0`, k6 `2.3.0`.
+Версии компонентов проверенного окружения: Helm `4.2.4`, чарт PostgreSQL `0.21.2`, образ миграции `postgres:18.6`, образ приложения `artemprotchenko/myapp:logging-v2`, чарт `kube-prometheus-stack` `92.17.0`, Grafana `13.3.0`, k6 `2.3.0`.
 
 Все команды ниже выполняются из корня репозитория, кроме явно отмеченных действий. Символ `\` переносит одну команду на следующую строку: после него не должно быть пробелов.
 
@@ -120,7 +122,7 @@ kubectl apply -f "$HOME/.config/health-service/postgres-credentials.yaml"
 kubectl describe secret postgres-credentials -n hs
 ```
 
-`describe` показывает имена ключей и размеры, не значения. `postgres-password` нужен администратору, `CUSTOM_PASSWORD` — приложению и миграции. Не добавляйте файл с паролями в Git. Secret отделяет учётные данные от обычных настроек, но сам по себе не гарантирует шифрование данных в хранилище Kubernetes.
+`describe` показывает имена ключей и размеры, не значения. `postgres-password` нужен администратору, `CUSTOM_PASSWORD` - приложению и миграции. Не добавляйте файл с паролями в Git. Secret отделяет учётные данные от обычных настроек, но сам по себе не гарантирует шифрование данных в хранилище Kubernetes.
 
 ## 2. PostgreSQL через Helm
 
@@ -151,7 +153,7 @@ kubectl wait -n hs --for=condition=complete job/users-migration-001 --timeout=12
 kubectl logs -n hs job/users-migration-001
 ```
 
-Ожидаемый лог: `CREATE TABLE`. При неудаче изучите `kubectl describe job users-migration-001 -n hs` и логи Job.
+Ожидаемые логи: JSON-события `migration_started` и `migration_completed`, между ними строка `CREATE TABLE`. При неудаче пишется `migration_failed`; изучите `kubectl describe job users-migration-001 -n hs` и логи Job.
 
 ConfigMap превращает SQL в файл `/migrations/001_create_users.sql` внутри контейнера. `psql -f` исполняет этот файл; локальный каталог проекта контейнеру не требуется.
 
@@ -169,7 +171,7 @@ kubectl create configmap users-migrations -n hs \
 
 ## 4. Приложение
 
-Deployment использует опубликованный образ `artemprotchenko/myapp:metrics-v4`.
+Deployment использует опубликованный образ `artemprotchenko/myapp:logging-v2`.
 
 ```bash
 kubectl apply -f K8s/app-configmap.yaml
@@ -184,9 +186,9 @@ kubectl logs -n hs deployment/health-service --tail=30
 Для публикации собственного образа замените `YOUR_DOCKERHUB_USER` на свой логин:
 
 ```bash
-docker build -t YOUR_DOCKERHUB_USER/myapp:metrics-v4 .
+docker build -t YOUR_DOCKERHUB_USER/myapp:logging-v2 .
 docker login
-docker push YOUR_DOCKERHUB_USER/myapp:metrics-v4
+docker push YOUR_DOCKERHUB_USER/myapp:logging-v2
 ```
 
 Затем укажите тот же образ в `K8s/dp.yaml` и повторите `apply` и `rollout status`. Для следующих изменений используйте новый тег.
@@ -224,7 +226,7 @@ kubectl apply -f K8s/ingress.yaml
 127.0.0.1 arch.homework
 ```
 
-Файл можно открыть через `sudo nano /etc/hosts`. В nano: `Ctrl+O`, Enter — сохранить; `Ctrl+X` — выйти. Для sudo нужен пароль macOS. Проверьте разрешение имени:
+Файл можно открыть через `sudo nano /etc/hosts`. В nano: `Ctrl+O`, Enter - сохранить; `Ctrl+X` - выйти. Для sudo нужен пароль macOS. Проверьте разрешение имени:
 
 ```bash
 dscacheutil -q host -a name arch.homework
@@ -275,9 +277,9 @@ npx newman run K8s/postman/users-api.postman_collection.json \
   --env-var "base_url=http://arch.homework"
 ```
 
-`NO_PROXY` / `no_proxy` направляют локальные запросы напрямую; значения перед командой действуют только на этот запуск. Эти настройки позволяют исключить прокси как причину `ECONNRESET` при обращении к локальному сервису. `--env-var` задаёт переменную Postman с приоритетом над одноимённой переменной коллекции.
+`NO_PROXY` / `no_proxy` отключают прокси для указанных адресов на время команды. `--env-var` задаёт переменную Postman с приоритетом над одноимённой переменной коллекции.
 
-Результат прогона 2 ноября 2026 года: **7 запросов, 18 проверок, 0 ошибок** через `arch.homework`. Последний `404` ожидаем: пользователь удалён. Это функциональный сценарий, а не нагрузочный тест. Проверки пустых полей, null и конфликта email проводились отдельно вручную и пока не включены в эту коллекцию.
+Результат функционального теста 2 ноября 2026 года: 7 запросов, 18 проверок, 0 ошибок через `arch.homework`. Последний `404` ожидаем: пользователь удалён. Пустые поля, null и конфликт email проверялись вручную и пока не включены в коллекцию.
 
 ## 7. Мониторинг: Prometheus и Grafana
 
@@ -322,7 +324,7 @@ helm upgrade nginx ingress-nginx/ingress-nginx \
   --wait --timeout 5m
 ```
 
-`upgrade` применяет к релизу значения чарта по умолчанию и значения из файла. Тип Service контроллера `LoadBalancer` — значение чарта по умолчанию, поэтому отдельно его указывать не нужно. Проверка:
+`upgrade` применяет к релизу значения чарта по умолчанию и значения из файла. Тип Service контроллера `LoadBalancer` - значение чарта по умолчанию, поэтому отдельно его указывать не нужно. Проверка:
 
 ```bash
 kubectl get service nginx-ingress-nginx-controller-metrics -n hs
@@ -355,7 +357,7 @@ kubectl port-forward -n monitoring service/monitoring-kube-prometheus-prometheus
 kubectl port-forward -n monitoring service/monitoring-grafana 3000:80
 ```
 
-Адрес — `http://localhost:3000`, пользователь `admin`. Пароль хранится в Secret, созданном чартом:
+Адрес - `http://localhost:3000`, пользователь `admin`. Пароль хранится в Secret, созданном чартом:
 
 ```bash
 kubectl get secret monitoring-grafana -n monitoring \
@@ -373,15 +375,15 @@ kubectl get secret monitoring-grafana -n monitoring \
 | Панель | Источник | Запрос |
 | --- | --- | --- |
 | RPS по API-методам | приложение | `sum by (method, route) (rate(http_requests_total[5m]))` |
-| Время обработки API — p50 / p95 / p99 | приложение | `histogram_quantile(q, sum by (le, method, route) (rate(http_request_duration_seconds_bucket[5m])))` |
-| Ошибки API — 5xx в секунду | приложение | `sum by (method, route) (rate(http_requests_total{status=~"5.."}[5m]))`, при отсутствии ошибок — 0 |
-| Максимум времени API — с запуска текущих реплик | приложение | `max by (method, route) (http_request_duration_max_seconds)` |
-| RPS сервиса — nginx-ingress | ingress | `sum(rate(nginx_ingress_controller_requests[5m]))` |
-| Время ответа сервиса — nginx-ingress p50 / p95 / p99 | ingress | `histogram_quantile(q, sum by (le) (rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])))` |
-| Ошибки сервиса — nginx-ingress 5xx в секунду | ingress | `sum(rate(nginx_ingress_controller_requests{status=~"5.."}[5m]))`, при отсутствии ошибок — 0 |
-| Максимум nginx-ingress — оценка по корзинам за 5 минут | ingress | `histogram_quantile(1, sum by (le) (rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])))` |
+| Время обработки API - p50 / p95 / p99 | приложение | `histogram_quantile(q, sum by (le, method, route) (rate(http_request_duration_seconds_bucket[5m])))` |
+| Ошибки API - 5xx в секунду | приложение | `sum by (method, route) (rate(http_requests_total{status=~"5.."}[5m]))`, при отсутствии ошибок - 0 |
+| Максимум времени API - с запуска текущих реплик | приложение | `max by (method, route) (http_request_duration_max_seconds)` |
+| RPS сервиса - nginx-ingress | ingress | `sum(rate(nginx_ingress_controller_requests[5m]))` |
+| Время ответа сервиса - nginx-ingress p50 / p95 / p99 | ingress | `histogram_quantile(q, sum by (le) (rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])))` |
+| Ошибки сервиса - nginx-ingress 5xx в секунду | ingress | `sum(rate(nginx_ingress_controller_requests{status=~"5.."}[5m]))`, при отсутствии ошибок - 0 |
+| Максимум nginx-ingress - оценка по корзинам за 5 минут | ingress | `histogram_quantile(1, sum by (le) (rate(nginx_ingress_controller_request_duration_seconds_bucket[5m])))` |
 
-В запросах приложения используется фильтр `namespace="hs", service="health-app-service"`, в запросах ingress — `namespace="hs", ingress=~"health-ingress|otusapp-ingress"`; в таблице фильтры сокращены. Квантили гистограммы — это оценка по линейной интерполяции внутри корзины, а не точные длительности отдельных запросов. Ingress учитывает весь трафик через оба Ingress, включая `/health/`; метрики приложения — только CRUD-маршруты.
+В запросах приложения используется фильтр `namespace="hs", service="health-app-service"`, в запросах ingress - `namespace="hs", ingress=~"health-ingress|otusapp-ingress"`; в таблице фильтры сокращены. Квантили гистограммы - это оценка по линейной интерполяции внутри корзины, а не точные длительности отдельных запросов. Ingress учитывает весь трафик через оба Ingress, включая `/health/`; метрики приложения - только CRUD-маршруты.
 
 ### Алерты
 
@@ -389,16 +391,16 @@ kubectl get secret monitoring-grafana -n monitoring \
 
 | Правило | Условие | Выдержка |
 | --- | --- | --- |
-| Health Service — высокая задержка ingress | p95 ingress за 5 минут > 0.2 с | 1m |
-| Health Service — ошибки 5xx на ingress | 5xx ingress за 5 минут > 0.1 в секунду | 1m |
+| Health Service - высокая задержка ingress | p95 ingress за 5 минут > 0.2 с | 1m |
+| Health Service - ошибки 5xx на ingress | 5xx ingress за 5 минут > 0.1 в секунду | 1m |
 
-Файл в формате Grafana file provisioning: через кнопку Import в интерфейсе он не загружается. Его можно положить в каталог provisioning Grafana (`/etc/grafana/provisioning/alerting/`) или создать правила вручную в **Alerting → Alert rules** по значениям из таблицы. В файле указан `datasourceUid: prometheus` — UID источника, который создаёт kube-prometheus-stack; в другой установке его может потребоваться заменить.
+Файл в формате Grafana file provisioning: через кнопку Import в интерфейсе он не загружается. Его можно положить в каталог provisioning Grafana (`/etc/grafana/provisioning/alerting/`) или создать правила вручную в **Alerting → Alert rules** по значениям из таблицы. В файле указан `datasourceUid: prometheus` - UID источника, который создаёт kube-prometheus-stack; в другой установке его может потребоваться заменить.
 
 Точка доставки уведомлений не настроена (`receiver: empty`): состояние правил видно в Grafana, но уведомления не отправляются.
 
 ### Нагрузочный тест
 
-Сценарий [users.js](tests/load/users.js) на каждом проходе выполняет полный CRUD-цикл со своей записью: POST → GET → PATCH → GET → DELETE. Запросы идут через `arch.homework`, поэтому нужен работающий `minikube tunnel`. Профиль: 1 мин — 2 VU, затем по 2 мин рост до 5 и 10 VU, 4 мин рост до 20 VU, 1 мин спад до 0. В начале каждого прохода пауза 1 секунда.
+Сценарий [users.js](tests/load/users.js) на каждом проходе выполняет полный CRUD-цикл со своей записью: POST → GET → PATCH → GET → DELETE. Запросы идут через `arch.homework`, поэтому нужен работающий `minikube tunnel`. Профиль: 1 мин - 2 VU, затем по 2 мин рост до 5 и 10 VU, 4 мин рост до 20 VU, 1 мин спад до 0. В начале каждого прохода пауза 1 секунда.
 
 ```bash
 k6 run tests/load/users.js 2>&1 | tee tests/load/results/crud-load.log
@@ -419,7 +421,7 @@ k6 run tests/load/users.js 2>&1 | tee tests/load/results/crud-load.log
 
 ### Скриншоты
 
-Дашборд за период нагрузки 8 ноября 2026, 21:05–21:22 MSK:
+Дашборд за период нагрузки 8 ноября 2026, 21:05-21:22 MSK:
 
 ![Дашборд во время нагрузки, часть 1](docs/screenshots/dashboard-load-1.png)
 
@@ -434,7 +436,7 @@ kubectl exec -it users-db-postgres-0 -n hs -- \
   psql -h users-db-postgres -U user_app -d users_db -W
 ```
 
-Введите пароль `CUSTOM_PASSWORD`. В psql: `\dt` — таблицы, `\d users` — структура таблицы, `\q` — выход.
+Введите пароль `CUSTOM_PASSWORD`. В psql: `\dt` - таблицы, `\d users` - структура таблицы, `\q` - выход.
 
 | Элемент | Значение |
 | --- | --- |
@@ -457,7 +459,7 @@ kubectl exec -it users-db-postgres-0 -n hs -- \
 | `curl -H` | Header: передать заголовок |
 | `curl -d` | Data: тело запроса |
 | `docker build -t` | Tag: имя и тег собираемого образа |
-| `docker build ... .` | Текущий каталог — контекст сборки |
+| `docker build ... .` | Текущий каталог - контекст сборки |
 
 ## Диагностика и остановка окружения
 
@@ -489,7 +491,7 @@ minikube stop
 Мониторинг:
 
 - Точный максимум есть только у приложения, и он считается с момента запуска каждой реплики, а не за последние 5 минут. После перезапуска Pod значение сбрасывается.
-- Максимум nginx-ingress — оценка по верхней границе корзины гистограммы. Если запрос попал в корзину `+Inf`, оценка может быть ниже реального максимума.
+- Максимум nginx-ingress - оценка по верхней границе корзины гистограммы. Если запрос попал в корзину `+Inf`, оценка может быть ниже реального максимума.
 - Error Rate показан как число ответов 5xx в секунду, а не как процент от всех запросов.
 - Механизм срабатывания алертов проверен на правиле задержки с временно сниженным порогом (Pending → Firing). Правило 5xx в состояние Firing не переводилось.
 - Уведомления алертов никуда не отправляются: точка доставки не настроена.
