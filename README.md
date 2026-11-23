@@ -1,6 +1,8 @@
 # Health Service - OTUS Microservices
 
-HTTP-сервис на Go: проверка здоровья и CRUD пользователей с хранением в PostgreSQL. Приложение разворачивается в Kubernetes, PostgreSQL устанавливается через Helm, таблица создаётся отдельным Job.
+HTTP-сервис на Go: регистрация, вход с JWT и CRUD профилей с хранением в PostgreSQL. Приложение разворачивается в Kubernetes, PostgreSQL устанавливается через Helm, схема создаётся и изменяется отдельными Job.
+
+Задание №7: [архитектура, схема, установка в namespace hs и тесты Postman/Newman](docs/OTUS_LESSON_7_SUBMISSION.md). Подтверждённый прогон: 12 запросов, 43 теста, 0 ошибок.
 
 Задание №6: [централизованное логирование - установка, проверки и скриншоты](docs/OTUS_LESSON_6_SUBMISSION.md). Приложение пишет JSON-логи, Fluent Bit отправляет их в Elasticsearch, Kibana показывает события приложения и миграций. Мониторинг из задания №5 для запуска EFK не требуется.
 
@@ -12,9 +14,9 @@ HTTP-сервис на Go: проверка здоровья и CRUD польз�
        → users-db-postgres:5432 → PostgreSQL → PVC
 ```
 
-Ingress задаёт правила HTTP-маршрутизации. Service направляет запросы к Pod приложения, Deployment поддерживает две реплики. Отдельный Job запускает `psql` для первоначального создания таблицы.
+Ingress задаёт правила HTTP-маршрутизации. Service направляет запросы к Pod приложения, Deployment поддерживает две реплики. Job 001 создаёт таблицу, Job 002 добавляет поле password_hash. Приложение выдаёт JWT при входе и проверяет владельца профиля перед чтением, изменением и удалением.
 
-Конфигурация подключения находится в ConfigMap, учётные данные - в Secret. Kubernetes передаёт их в окружение контейнера; Go читает переменные `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`.
+Конфигурация подключения находится в ConfigMap, учётные данные - в Secret. Kubernetes передаёт их в окружение контейнера; Go читает переменные `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, `JWT_SIGNING_KEY`. Общий ключ JWT хранится в отдельном Secret `jwt-signing` и одинаков у двух реплик.
 
 Мониторинг описан в разделе [7. Мониторинг: Prometheus и Grafana](#7-мониторинг-prometheus-и-grafana): приложение и nginx Ingress Controller отдают метрики, Prometheus их собирает, Grafana строит дашборд и проверяет правила алертов.
 
@@ -31,10 +33,14 @@ nginx-ingress :10254/metrics ┘
 | Метод | Путь | Результат |
 | --- | --- | --- |
 | GET | `/health/` | `200`, `{"status":"OK"}` |
-| POST | `/users` | Создать пользователя, `201` и JSON с ID |
-| GET | `/users/{id}` | Получить пользователя, `200` |
-| PATCH | `/users/{id}` | Изменить переданные поля, `200` |
-| DELETE | `/users/{id}` | Удалить пользователя, `204` без тела |
+| POST | `/users/register` | Регистрация с name/email/password, `201` и профиль без пароля |
+| POST | `/users/login` | Вход по email/password, `200`, access_token и token_type=Bearer |
+| POST | `/users` | Старый публичный CRUD: создать запись без пароля, `201` |
+| GET | `/users/{id}` | Получить свой профиль с JWT, `200` |
+| PATCH | `/users/{id}` | Изменить свой профиль с JWT, `200` |
+| DELETE | `/users/{id}` | Удалить свой профиль с JWT, `204` без тела |
+
+Для GET/PATCH/DELETE передавайте `Authorization: Bearer <JWT>`. Нет действующего токена - `401`, ID владельца JWT отличается от ID профиля - `403`. JWT подписывается HS256 и действует 15 минут. Вход и регистрация публичны. Logout/refresh не реализованы.
 
 Поля пользователя: `id`, `name`, `email`. ID назначает БД через `SERIAL`; имя и email обязательны, email уникален. Пробелы по краям имени и email удаляются.
 
@@ -54,8 +60,14 @@ PATCH сохраняет поля, которые не переданы. Пус�
 | `K8s/ingress.yaml` | Маршруты `arch.homework` |
 | `migrations/001_create_users.sql` | SQL создания таблицы |
 | `K8s/migrations-configmap.yaml` | SQL как файл для контейнера миграции |
-| `K8s/migrations-job.yaml` | Однократное выполнение SQL через psql |
-| `K8s/postman/users-api.postman_collection.json` | Семь запросов и автоматические проверки CRUD |
+| `K8s/migrations-job.yaml` | Миграция 001: создание таблицы через psql |
+| `K8s/migrations-auth-job.yaml` | Миграция 002: добавление password_hash |
+| `K8s/postman/auth-profile.postman_collection.json` | Текущий JWT-сценарий: 12 запросов, 43 теста |
+| `docs/OTUS_LESSON_7_SUBMISSION.md` | Архитектура и установка задания №7 |
+| `docs/diagrams/health-service-auth.puml` | Исходник схемы PlantUML |
+| `docs/diagrams/health-service-auth.png` | Картинка архитектуры |
+| `docs/test-results/auth-profile-newman.log` | Успешный прогон Newman №7 |
+| `K8s/postman/users-api.postman_collection.json` | Исторические CRUD-тесты до JWT; к текущей защите не адаптированы |
 | `K8s/helm/monitoring/values.yaml` | Настройки kube-prometheus-stack: хранение, интервалы сбора, тома |
 | `K8s/helm/nginx/values.yaml` | Включение метрик и ServiceMonitor nginx Ingress Controller |
 | `K8s/service-monitor.yaml` | ServiceMonitor: сбор `/metrics` приложения |
@@ -70,7 +82,7 @@ PATCH сохраняет поля, которые не переданы. Пус�
 
 Инструкция рассчитана на macOS с Docker Desktop и Minikube с Docker-драйвером. Нужны Docker, Minikube, kubectl и Helm. Для Newman нужны Node.js LTS и npm; для локальной компиляции - Go версии из `go.mod`. При сборке Docker компилятор берётся из образа.
 
-Версии компонентов проверенного окружения: Helm `4.2.4`, чарт PostgreSQL `0.21.2`, образ миграции `postgres:18.6`, образ приложения `artemprotchenko/myapp:logging-v2`, чарт `kube-prometheus-stack` `92.17.0`, Grafana `13.3.0`, k6 `2.3.0`.
+Версии компонентов проверенного окружения: Helm `4.2.4`, чарт PostgreSQL `0.21.2`, образ миграции `postgres:18.6`, образ приложения `artemprotchenko/myapp:auth-owner-v1`, чарт `kube-prometheus-stack` `92.17.0`, Grafana `13.3.0`, k6 `2.3.0`.
 
 Все команды ниже выполняются из корня репозитория, кроме явно отмеченных действий. Символ `\` переносит одну команду на следующую строку: после него не должно быть пробелов.
 
@@ -144,7 +156,7 @@ kubectl get pods,svc,pvc -n hs -l app.kubernetes.io/instance=users-db
 
 Helm создаёт роль `user_app` и БД `users_db` при первоначальной инициализации. Если release уже установлен, не выполняйте `helm install` повторно; проверьте `helm list -n hs` и состояние ресурсов.
 
-## 3. Создание таблицы через Job
+## 3. Миграции через Job
 
 ```bash
 kubectl apply -f K8s/migrations-configmap.yaml
@@ -159,19 +171,31 @@ ConfigMap превращает SQL в файл `/migrations/001_create_users.sql
 
 Миграция рассчитана на пустую БД: повторный SQL `CREATE TABLE users` завершится ошибкой, если таблица уже существует. Повторный `apply` завершённого неизменённого Job не запускает его снова. Не удаляйте и не пересоздавайте Job для обычного перезапуска приложения.
 
-SQL хранится и в `migrations/`, и в ConfigMap. Если исходный SQL меняется до первого запуска, обновите ConfigMap:
+Для текущего приложения после 001 нужна миграция 002:
 
 ```bash
-kubectl create configmap users-migrations -n hs \
-  --from-file=001_create_users.sql=migrations/001_create_users.sql \
-  --dry-run=client -o yaml > K8s/migrations-configmap.yaml
+kubectl apply -f K8s/migrations-auth-job.yaml
+kubectl wait -n hs --for=condition=complete job/users-migration-002 --timeout=120s
+kubectl logs -n hs job/users-migration-002
 ```
 
-Эта команда только генерирует YAML. Для изменения уже существующей схемы нужна следующая миграция.
+Она добавляет `password_hash TEXT`, ожидается `ALTER TABLE` и `migration_completed`. Если обе миграции уже выполнены, пропустите их запуск. SQL не идемпотентен; существующий столбец повторно не добавляйте. Проверка схемы и сценарий существующей БД описаны в [инструкции №7](docs/OTUS_LESSON_7_SUBMISSION.md#3-миграции).
+
+Актуальная поставка SQL - `K8s/migrations-configmap.yaml`: в нём должны сохраняться оба ключа 001 и 002. Старый локальный файл `migrations/001_create_users.sql` содержит только первую миграцию. Не перегенерируйте ConfigMap только из него: иначе SQL второй миграции исчезнет.
 
 ## 4. Приложение
 
-Deployment использует опубликованный образ `artemprotchenko/myapp:logging-v2`.
+Deployment использует опубликованный образ `artemprotchenko/myapp:auth-owner-v1`.
+
+До первого запуска нужен Secret jwt-signing в hs. Проверьте `kubectl get secret jwt-signing -n hs`. Только если объект отсутствует, создайте ключ:
+
+```bash
+kubectl create secret generic jwt-signing \
+  -n hs \
+  --from-literal=JWT_SIGNING_KEY="$(openssl rand -hex 32)"
+```
+
+Существующий ключ при обычном обновлении сохраняйте. Значение передаётся обеим репликам через переменную окружения; без него приложение не запускается.
 
 ```bash
 kubectl apply -f K8s/app-configmap.yaml
@@ -181,14 +205,14 @@ kubectl rollout status deployment/health-service -n hs --timeout=120s
 kubectl logs -n hs deployment/health-service --tail=30
 ```
 
-Ожидаемые сообщения: `Соединение с PostgreSQL проверено` и `Сервер запущен на :8000`. Приложение проверяет соединение с БД при старте; без обязательных переменных окружения оно не запустится.
+Ожидаемые события логов: `database_connected` и `http_server_starting`. Готовность HTTP-сервера дополнительно проверяют пробы и запрос /health/. Приложение проверяет соединение с БД при старте; без обязательных переменных окружения оно не запустится.
 
 Для публикации собственного образа замените `YOUR_DOCKERHUB_USER` на свой логин:
 
 ```bash
-docker build -t YOUR_DOCKERHUB_USER/myapp:logging-v2 .
+docker build -t YOUR_DOCKERHUB_USER/myapp:auth-owner-v1 .
 docker login
-docker push YOUR_DOCKERHUB_USER/myapp:logging-v2
+docker push YOUR_DOCKERHUB_USER/myapp:auth-owner-v1
 ```
 
 Затем укажите тот же образ в `K8s/dp.yaml` и повторите `apply` и `rollout status`. Для следующих изменений используйте новый тег.
@@ -257,29 +281,26 @@ kubectl port-forward -n hs service/health-app-service 8080:80
 
 ## 6. Автоматические проверки Postman / Newman
 
-Коллекция: [users-api.postman_collection.json](K8s/postman/users-api.postman_collection.json). Её можно импортировать в Postman и выполнить через Collection Runner. `base_url` должен быть `http://arch.homework`.
+Текущая коллекция: [auth-profile.postman_collection.json](K8s/postman/auth-profile.postman_collection.json). Экспорт Collection v2.1 содержит `baseUrl=http://arch.homework`; все URL используют `{{baseUrl}}`. Импортируйте коллекцию в Postman и запустите 12 запросов по порядку с одной итерацией.
 
-Порядок запросов: Health → создание → чтение → PATCH имени → чтение обновления → удаление → проверка отсутствия. Email генерируется заново при каждом прогоне, ID сохраняется из ответа POST. Сценарий создаёт и удаляет собственного пользователя.
+Сценарий создаёт двух пользователей со случайными данными, проверяет запреты чтения/изменения без входа, вход первого, изменение и сохранение его профиля, вход второго, запреты чтения/изменения чужого профиля и сохранность данных после отказа. ID и токены передаются через переменные, предварительно создавать их не нужно. Logout отсутствует. Тестовые записи после прогона остаются в БД.
 
-Для запуска из терминала нужны Node.js LTS и npm:
-
-```bash
-node --version
-npm --version
-```
-
-При первом запуске `npx` предложит скачать Newman. Глобальная установка не требуется:
+Для запуска из корня проекта нужны Node.js/npm, доступный arch.homework и minikube tunnel:
 
 ```bash
 NO_PROXY=arch.homework,localhost,127.0.0.1 \
 no_proxy=arch.homework,localhost,127.0.0.1 \
-npx newman run K8s/postman/users-api.postman_collection.json \
-  --env-var "base_url=http://arch.homework"
+npx --yes newman run K8s/postman/auth-profile.postman_collection.json \
+  --timeout-request 10000 \
+  --timeout 60000 \
+  --reporters cli
 ```
 
-`NO_PROXY` / `no_proxy` отключают прокси для указанных адресов на время команды. `--env-var` задаёт переменную Postman с приоритетом над одноимённой переменной коллекции.
+NO_PROXY/no_proxy обходят прокси для перечисленных адресов на этот запуск. Тайм-ауты Newman заданы в миллисекундах. CLI-репортёр показывает REQUEST/REQUEST BODY/RESPONSE STATUS/RESPONSE BODY из общего скрипта, маскирующего пароль и JWT как `<hidden>`.
 
-Результат функционального теста 2 ноября 2026 года: 7 запросов, 18 проверок, 0 ошибок через `arch.homework`. Последний `404` ожидаем: пользователь удалён. Пустые поля, null и конфликт email проверялись вручную и пока не включены в коллекцию.
+Подтверждённый прогон 23 ноября 2026: **12 запросов, 43 теста, 0 ошибок**, 1133 ms. Ожидаемые 401/403 являются частью проверок. [Полный вывод](docs/test-results/auth-profile-newman.log), [сценарий и ограничения](docs/OTUS_LESSON_7_SUBMISSION.md#6-postman-и-newman).
+
+Коллекция `users-api.postman_collection.json` сохранена как результат предыдущего CRUD-задания. Её успешный прогон 2 ноября (7 запросов, 18 проверок) относится к версии до JWT. Эта коллекция и старый нагрузочный сценарий не адаптированы к текущим защищённым маршрутам.
 
 ## 7. Мониторинг: Prometheus и Grafana
 
@@ -400,6 +421,8 @@ kubectl get secret monitoring-grafana -n monitoring \
 
 ### Нагрузочный тест
 
+Исторический сценарий задания №5 ниже не передаёт JWT. На текущем образе защищённые CRUD-маршруты вернут 401; для повторного нагрузочного тестирования нужна адаптация аутентификации. Приведённые результаты относятся к версии до JWT.
+
 Сценарий [users.js](tests/load/users.js) на каждом проходе выполняет полный CRUD-цикл со своей записью: POST → GET → PATCH → GET → DELETE. Запросы идут через `arch.homework`, поэтому нужен работающий `minikube tunnel`. Профиль: 1 мин - 2 VU, затем по 2 мин рост до 5 и 10 VU, 4 мин рост до 20 VU, 1 мин спад до 0. В начале каждого прохода пауза 1 секунда.
 
 ```bash
@@ -483,8 +506,10 @@ minikube stop
 ## Текущие ограничения
 
 - `/health/` проверяет HTTP-приложение; после запуска доступность БД через этот endpoint не проверяется. Liveness и readiness используют один маршрут.
-- Проверки формата email, длины строк и ограничения размера HTTP-тела пока не реализованы. POST и PATCH имеют разную строгость разбора JSON.
-- SQL-миграция одна, автоматического учёта версий миграций пока нет.
+- Регистрация проверяет формат email, длину имени/email и пароль 15-128 кодовых точек. Старый CRUD/PATCH имеет другую строгость валидации. Размер HTTP-тела пока не ограничен.
+- SQL-миграций две, обе не идемпотентны; автоматического учёта версий пока нет.
+- JWT не отзываются до истечения срока; refresh/logout не реализованы. Нет ограничения попыток входа и выравнивания времени отказов. Локальный стенд работает по HTTP без TLS.
+- Старый POST /users публичен и создаёт профиль без пароля. Доступ к существующему чужому профилю он не предоставляет.
 - `docker-compose.yaml` не содержит PostgreSQL и переменных DB_*. Для текущей версии используйте описанный Kubernetes-сценарий.
 - Компоненты проверены в существующем кластере. Полное развёртывание с нуля по этой инструкции отдельно не проверялось.
 

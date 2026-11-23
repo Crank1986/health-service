@@ -1,0 +1,68 @@
+@startuml
+title Health Service - регистрация, JWT и защита профиля
+
+left to right direction
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam backgroundColor #F7F9FC
+skinparam defaultFontName Arial
+skinparam ArrowColor #31546B
+
+actor "Клиент\nPostman / Newman" as client
+
+rectangle "Kubernetes namespace: hs" {
+    component "nginx Ingress Controller\narch.homework" as ingress #E2F3F1
+    component "Service\nhealth-app-service\n80 -> 8000" as service #E2F3F1
+
+    rectangle "Deployment: health-service\nreplicas: 2" {
+        component "Go-приложение\nреплика 1\nHTTP :8000" as app1 #E7EDFF
+        component "Go-приложение\nреплика 2\nHTTP :8000" as app2 #E7EDFF
+    }
+
+    database "PostgreSQL\nПрофили пользователей\nХеши паролей Argon2id" as db #E3F0FF
+    rectangle "Secret: jwt-signing\nJWT_SIGNING_KEY" as jwtSecret #FFF4D9
+}
+
+' Направление HTTP-запросов и обращений к БД.
+client --> ingress : HTTP
+ingress --> service : Маршрутизация
+service --> app1
+service --> app2
+app1 --> db : SQL / pgxpool
+app2 --> db : SQL / pgxpool
+
+' Обе реплики получают одинаковый ключ при запуске контейнеров.
+jwtSecret ..> app1 : Переменная окружения
+jwtSecret ..> app2 : Переменная окружения
+
+note bottom of ingress
+  Ingress маршрутизирует запросы.
+  Аутентификацию и авторизацию
+  выполняет Go-приложение.
+end note
+
+note bottom of db
+  Регистрация: POST /users/register
+  Проверка данных, Argon2id,
+  сохранение профиля и хеша.
+
+  Вход: POST /users/login
+  Поиск пользователя, проверка пароля,
+  выдача JWT: HS256, срок 15 минут.
+end note
+
+legend bottom left
+  Защищённые маршруты: GET / PATCH / DELETE /users/{id}
+  Клиент передаёт Authorization: Bearer <JWT>.
+  Каждая реплика проверяет подпись, iss, aud, exp и положительный sub.
+  Затем сравнивает sub с id профиля в URL.
+  Нет действующего JWT: 401. Чужой профиль: 403.
+  При совпадении ID выполняется обработчик и запрос к БД.
+
+  Сплошные стрелки показывают направление запросов.
+  Ответы возвращаются по обратному пути.
+  Пунктир показывает передачу ключа из Secret при запуске,
+  а не обращение к Kubernetes API на каждый HTTP-запрос.
+endlegend
+
+@enduml

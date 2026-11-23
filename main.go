@@ -2,6 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/mail"
 	"net/url"
 	"os"
 	"os/signal"
@@ -17,7 +21,11 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
+	"golang.org/x/crypto/argon2"
+
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -219,11 +227,268 @@ type CreateUserRequest struct {
 	Email string `json:"email"`
 }
 
+// RegisterRequest содержит имя, email и пароль для регистрации
+type RegisterRequest struct {
+	Name     string `json:"name"`
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type LoginRequest struct {
+	Email    string `json:"email"`
+	Password string `json:"password"`
+}
+
+type LoginResponse struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+}
+
 // UpdateUserRequest позволяет определить, какие поля клиент хочет изменить.
 // nil означает отсутствие значения, а указатель на "" — явно переданную пустую строку.
 type UpdateUserRequest struct {
 	Name  *string `json:"name"`
 	Email *string `json:"email"`
+}
+
+// hashPassword создаёт случайную соль и вычисляет хеш пароля.
+// Возвращает алгоритм, параметры, соль и хеш в одной строке.
+func hashPassword(password string) string {
+	// Параметры вычисления: память в Kib, число проходов и параллелизм
+	const memory = 19 * 1024
+	const iterations = 2
+	const parallelism = 1
+	const keyLength = 32
+
+	// Создаём 16 байт криптографически случайной соли, соли? Ну да мы же в Санкт - Питербурге:DD
+	salt := make([]byte, 16)
+	rand.Read(salt)
+
+	// Вычисляем Argon2id-хэш из байтов пароля и соли
+	hash := argon2.IDKey(
+		[]byte(password), salt,
+		iterations, memory, parallelism, keyLength,
+	)
+
+	return fmt.Sprintf(
+		"$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
+		argon2.Version, memory, iterations, parallelism,
+		base64.RawStdEncoding.EncodeToString(salt),
+		base64.RawStdEncoding.EncodeToString(hash),
+	)
+}
+
+func verifyPassword(password, encodedHash string) (bool, error) {
+	// Разделяем строку на алгоритм, версию, параметры, соль и хэш
+	parts := strings.Split(encodedHash, "$")
+	if len(parts) != 6 {
+		return false, fmt.Errorf("некорректный формат хэша")
+	}
+
+	// Принимаем только поддерживаемый алгоритм и параметры
+	if parts[0] != "" ||
+		parts[1] != "argon2id" ||
+		parts[2] != fmt.Sprintf("v=%d", argon2.Version) ||
+		parts[3] != "m=19456,t=2,p=1" {
+		return false, fmt.Errorf("неподдерживаемые параметры хэша")
+	}
+
+	// Восстанавливаем байты соли из Base64
+	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
+	if err != nil || len(salt) != 16 {
+		return false, fmt.Errorf("некорректная соль хэша")
+	}
+
+	// Восстанавливаем сохранённый результат вычисления
+	expectedHash, err := base64.RawStdEncoding.DecodeString(parts[5])
+	if err != nil || len(expectedHash) != 32 {
+		return false, fmt.Errorf("неккоректная длина или кодировка хэша")
+	}
+	// Вычисляем хэш введённого пароля с той же солью и параметрами
+	actualHash := argon2.IDKey(
+		[]byte(password), salt,
+		2, 19*1024, 1, 32,
+	)
+
+	// Сравниваем байты способом, предназначенным для криптографического кода.
+	return subtle.ConstantTimeCompare(actualHash, expectedHash) == 1, nil
+}
+
+func createAccessToken(userID int64, signingKey []byte) (string, error) {
+	// не выдаём токен для некорректного ID или слишком короткого ключа
+	if userID <= 0 || len(signingKey) < 32 {
+		return "", fmt.Errorf("некорректный ID или ключ подписи JWT")
+	}
+
+	// Одно время используем для момента выдачи и расчёта срока действия
+	now := time.Now()
+
+	// Заполняем стандартные поля JWT
+	claims := jwt.RegisteredClaims{
+		Subject:   strconv.FormatInt(userID, 10),
+		Issuer:    "health-service",
+		Audience:  jwt.ClaimStrings{"health-service-api"},
+		IssuedAt:  jwt.NewNumericDate(now),
+		ExpiresAt: jwt.NewNumericDate(now.Add(15 * time.Minute)),
+	}
+
+	// Выбираем алгоритм и подписываем токен секретным ключом
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
+	return token.SignedString(signingKey)
+}
+
+// parseAccessToken проверяет JWT и возвращает ID его владельца
+func parseAccessToken(tokenString string, signingKey []byte) (int64, error) {
+	// Не проверяем токены с отсутствующим или слишком коротким ключом
+	if len(signingKey) < 32 {
+		return 0, fmt.Errorf("некорректный ключ проверки JWT")
+	}
+
+	// Подготавливаес структуру для полей токена
+	var claims jwt.RegisteredClaims
+
+	token, err := jwt.ParseWithClaims(
+		tokenString,
+		&claims,
+		// Библиотека использует этот ключ для проверки подписи
+		func(token *jwt.Token) (any, error) {
+			return signingKey, nil
+		},
+		// Разрешаем только выбранный алгоритм
+		jwt.WithValidMethods([]string{"HS256"}),
+		// Проверяем издателя, получателя и срок действия
+		jwt.WithIssuer("health-service"),
+		jwt.WithAudience("health-service-api"),
+		jwt.WithExpirationRequired(),
+	)
+	if err != nil || !token.Valid {
+		return 0, fmt.Errorf("Недействительный JWT")
+	}
+
+	// Используем sub только после успешной проверки токена
+	userID, err := strconv.ParseInt(claims.Subject, 10, 64)
+	if err != nil || userID <= 0 {
+		return 0, fmt.Errorf("некорректный ID пользователя в JWT")
+	}
+
+	return userID, nil
+}
+
+// requireOwnerMiddleware разрешает операцию только владельцу профиля
+func requireOwnerMiddleware(
+	signingKey []byte,
+	next http.HandlerFunc,
+) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		//Ожидаем заголовок Authorization: Bearer <JWT>
+		parts := strings.Fields(r.Header.Get("Authorization"))
+		if len(parts) != 2 || !strings.EqualFold(parts[0], "Bearer") {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "Требуется вход", http.StatusUnauthorized)
+			return
+		}
+
+		// Устанавливаем личность только по проверенному токену
+		userID, err := parseAccessToken(parts[1], signingKey)
+		if err != nil {
+			w.Header().Set("WWW-Authenticate", "Bearer")
+			http.Error(w, "Недействительный токен", http.StatusUnauthorized)
+			return
+		}
+
+		// Получаем ID профиля с которым клиент хочет работать
+		profileID, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
+		if err != nil || profileID <= 0 {
+			http.Error(w, "ID должен быть положительным целым числом",
+				http.StatusBadRequest)
+			return
+		}
+
+		// Вход выполнен, но доступ к чужому профилю запрещён
+		if userID != profileID {
+			http.Error(w, "Доступ к чужому профилю запрещён",
+				http.StatusForbidden)
+			return
+		}
+
+		// Проверки пройдены, вызываем обработчик профиля
+		next(w, r)
+	}
+}
+
+// decodeLogin читает запрос на вход и проверяет обязательные поля
+func decodeLogin(r *http.Request) (LoginRequest, error) {
+	//создаем переменную для данных из JSON
+	var input LoginRequest
+
+	// Отклонеяем поля, котрых нет в LoginRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&input); err != nil {
+		return input, fmt.Errorf("некорректный JSON: %w", err)
+	}
+
+	//разрешаем только одно JSON-значение в теле запроса
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return input, fmt.Errorf("тело запроса должно содержать один JSON-объект")
+	}
+
+	// Email обрабатываем так же, как при регистрации и пароль не меняем
+	input.Email = strings.TrimSpace(input.Email)
+
+	if input.Email == "" || input.Password == "" {
+		return input, fmt.Errorf("email и password обязательны")
+	}
+
+	return input, nil
+}
+
+// decodeRegister читает данные регистрации и проверяет обязательные поля
+// Пароль сохраняем в исходном виде и пробелы могут быть его частью
+func decodeRegister(r *http.Request) (RegisterRequest, error) {
+	var input RegisterRequest
+
+	// Разрешаем только поля, объявленные в RegisterRequest
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&input); err != nil {
+		return input, fmt.Errorf("некорректный JSON: %w", err)
+	}
+
+	// После первого JSON-значения тело запроса должно закончиться
+	if err := decoder.Decode(new(any)); err != io.EOF {
+		return input, fmt.Errorf("тело запроса должно содержать один JSON-объект")
+	}
+
+	// Убираем внешние проблемы у имени и email
+	input.Name = strings.TrimSpace(input.Name)
+	input.Email = strings.TrimSpace(input.Email)
+
+	if input.Name == "" || input.Email == "" || input.Password == "" {
+		return input, fmt.Errorf("name, email и password обязательны")
+	}
+
+	// Проверяем длину имени и email до записи в VARCHAR(200)
+	if utf8.RuneCountInString(input.Name) > 200 ||
+		utf8.RuneCountInString(input.Email) > 200 {
+		return input, fmt.Errorf("name и email должны содержать не более 200 символов")
+	}
+
+	// Проверяем формат email и принимаем только сам адрес, без имени
+	address, err := mail.ParseAddress(input.Email)
+	if err != nil || address.Address != input.Email {
+		return input, fmt.Errorf("email должен содержать корректный адрес электронной почты")
+	}
+
+	//Считаем кодовые точки Unicode, чтобы учитывать кириллицу
+	passwordLength := utf8.RuneCountInString(input.Password)
+	if passwordLength < 15 || passwordLength > 128 {
+		return input, fmt.Errorf("пароль должен содержать от 15 до 128 символов")
+	}
+
+	return input, nil
 }
 
 // decodeCreateUser читает JSON-анкету и проверяет обязательные поля.
@@ -296,6 +561,178 @@ func decodeUpdateUser(r *http.Request) (UpdateUserRequest, error) {
 	}
 
 	return input, nil
+}
+
+// loginHandler проверяет учётные данные и вадаёт JWT
+func loginHandler(
+	w http.ResponseWriter,
+	r *http.Request,
+	pool *pgxpool.Pool,
+	signingKey []byte,
+) {
+	// Читаем email и пароль из запроса
+	input, err := decodeLogin(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Ограничиваем время обращения к БД
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	// У старых пользователей хэш может отсутствовать
+	var userID int64
+	var passwordHash *string
+
+	err = pool.QueryRow(
+		ctx,
+		"SELECT id, password_hash FROM users WHERE email = $1",
+		input.Email,
+	).Scan(&userID, &passwordHash)
+
+	// Не раскрываем клиенту, существует ли указанный емэйл или нет
+	if errors.Is(err, pgx.ErrNoRows) {
+		http.Error(w, "Неверный email или пароль", http.StatusUnauthorized)
+		return
+	}
+
+	// другие ошибки БД не означают неправильный пароль
+	if err != nil {
+		slog.Error("Ошибка поиска пользователя при входе",
+			"event", "database_operation_failed",
+			"operation", "login",
+		)
+		http.Error(w, "Внутренняя ошибка сервера", http.StatusInternalServerError)
+		return
+	}
+
+	// У старых записей может не быть пароля
+	if passwordHash == nil {
+		http.Error(w, "Неверный email или пароль", http.StatusUnauthorized)
+		return
+	}
+
+	// Проверяем пароль по сохранённым соли и хэшу
+	matches, err := verifyPassword(input.Password, *passwordHash)
+	if err != nil {
+		slog.Error("Не удалось проверить сохранённый хэш",
+			"event", "password_verification_failed",
+			"user_id", userID,
+		)
+		http.Error(w, "Внутренняя ошибка сервера", http.StatusInternalServerError)
+		return
+	}
+
+	if !matches {
+		http.Error(w, "Неверный email или пароль", http.StatusUnauthorized)
+		return
+	}
+
+	// Создаём JWT после успешной проверки пароля
+	accessToken, err := createAccessToken(userID, signingKey)
+	if err != nil {
+		slog.Error("Не удалось создать JWT",
+			"event", "token_creation_failed",
+			"user_id", userID,
+		)
+		http.Error(w, "Внутренняя ошибка сервера", http.StatusInternalServerError)
+		return
+	}
+
+	// Готовим ответ, пароль и его хэш в него не входят
+	response := LoginResponse{
+		AccessToken: accessToken,
+		TokenType:   "Bearer",
+	}
+	data, err := json.Marshal(response)
+	if err != nil {
+		http.Error(w, "Внутренняя ошибка сервера", http.StatusInternalServerError)
+		return
+	}
+
+	// Просим клиентов и посредников не сохранять ответ с токеном в кеше
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(data)
+}
+
+// registerHandler принимает анкету, регистрирует пользователя и возвращает запись с ID.
+func registerHandler(w http.ResponseWriter, r *http.Request, pool *pgxpool.Pool) {
+	input, err := decodeRegister(r)
+	if err != nil {
+		// Данные не прошли проверку, запись в БД не появилась
+		slog.Warn("Некорректные данные для создания пользователя",
+			"event", "validation_failed",
+			"operation", "register_user",
+			"reason", err.Error(),
+		)
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Проверенные данные готовы: вычисляем хэш
+	passwordHash := hashPassword(input.Password)
+
+	// Передаём значения отдельно от SQL; ID назначает база данных.
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	var user User
+	err = pool.QueryRow(
+		ctx,
+		`INSERT INTO users (name, email, password_hash)
+		VALUES ($1, $2, $3)
+		RETURNING id, name, email`,
+		input.Name,
+		input.Email,
+		passwordHash,
+	).Scan(&user.ID, &user.Name, &user.Email)
+
+	// Код 23505 означает нарушение UNIQUE. Отвечаем понятной ошибкой клиенту.
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+		slog.Warn("Email уже зарегистрирован",
+			"event", "user_email_conflict",
+			"operation", "register_user",
+		)
+		http.Error(w, "учётная запись с данным email уже зарегистрирована", http.StatusConflict)
+		return
+	}
+	if err != nil {
+		// Операция создания не удалась из за ошибки БД
+		slog.Error("Ошибка создания пользователя",
+			"event", "database_operation_failed",
+			"operation", "register_user",
+			"error", err.Error(),
+		)
+		http.Error(w, "Внутренняя ошибка сервера", http.StatusInternalServerError)
+		return
+	}
+
+	// INSERT завершился успешно, БД вернула ID созданной записи
+	slog.Info("Пользователь зарегистрирован",
+		"event", "user_registered",
+		"operation", "register_user",
+		"user_id", user.ID,
+	)
+
+	// Сначала готовим JSON, затем отправляем статус 201 и тело ответа.
+	data, err := json.Marshal(user)
+	if err != nil {
+		slog.Error("Не удалось сформировать JSON-ответ",
+			"event", "response_encoding_failed",
+			"operation", "register_user",
+			"user_id", user.ID,
+			"error", err.Error(),
+		)
+		http.Error(w, "Внутренняя ошибка сервера", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	w.Write(data)
 }
 
 // createUserHandler принимает анкету, сохраняет пользователя и возвращает запись с ID.
@@ -671,6 +1108,18 @@ func main() {
 		slog.Error("Не заданы обязательные настройки подключения к БД", "event", "configuration_invalid")
 		os.Exit(1)
 	}
+
+	// Читаем общий ключ подписи JWT из окружения контейнера
+	signingKey := []byte(os.Getenv("JWT_SIGNING_KEY"))
+
+	// Без подходящего ключа приложение не должно выдавать токены
+	if len(signingKey) < 32 {
+		slog.Error("JWT_SIGNING_KEY должен содержать не менее 32 байт",
+			"event", "configuration_invalid",
+		)
+		os.Exit(1)
+	}
+
 	// Собираем URL с корректным кодированием специальных символов в учётных данных.
 	// Полный URL содержит пароль, поэтому его нельзя печатать в логах.
 	dbUrl := url.URL{
@@ -712,10 +1161,31 @@ func main() {
 	http.HandleFunc("GET /users/{id}", metricsMiddleware(
 		// Все ID объединяем под одним шаблоном маршрута.
 		"/users/{id}",
-		// Передаём функцию чтения как задание для обёртки.
+		// Измеряем запрос и разрешаем чтение только владельцу профиля.
+		requireOwnerMiddleware(signingKey,
+			// Передаём функцию чтения как задание для обёртки.
+			func(w http.ResponseWriter, r *http.Request) {
+				// Вызываем существующий обработчик с доступом к БД.
+				handler(w, r, pool)
+			},
+		),
+	))
+
+	// Подключаем регистрацию и измерение её запросов
+	http.HandleFunc("POST /users/register", metricsMiddleware(
+		"/users/register",
 		func(w http.ResponseWriter, r *http.Request) {
-			// Вызываем существующий обработчик с доступом к БД.
-			handler(w, r, pool)
+			// Передаём обработчику регистрации общий пул подключений к БД
+			registerHandler(w, r, pool)
+		},
+	))
+
+	// Подключаем вход и измерение его запросов
+	http.HandleFunc("POST /users/login", metricsMiddleware(
+		"/users/login",
+		func(w http.ResponseWriter, r *http.Request) {
+			// Передаём общий пул БД и ключ подписи JWT
+			loginHandler(w, r, pool, signingKey)
 		},
 	))
 
@@ -734,22 +1204,28 @@ func main() {
 	http.HandleFunc("DELETE /users/{id}", metricsMiddleware(
 		// Для метрики передаём шаблон пути; HTTP-метод обёртка возьмёт из запроса.
 		"/users/{id}",
-		// Передаём функцию удаления как задание для обёртки.
-		func(w http.ResponseWriter, r *http.Request) {
-			// Вызываем существующий обработчик с доступом к БД.
-			deleteUserHandler(w, r, pool)
-		},
+		// Удалять профиль может только его владелец.
+		requireOwnerMiddleware(signingKey,
+			// Передаём функцию удаления как задание для обёртки.
+			func(w http.ResponseWriter, r *http.Request) {
+				// Вызываем существующий обработчик с доступом к БД.
+				deleteUserHandler(w, r, pool)
+			},
+		),
 	))
 
 	// Регистрируем обновление пользователя через обёртку подсчёта запросов.
 	http.HandleFunc("PATCH /users/{id}", metricsMiddleware(
 		// Все ID объединяем под одним шаблоном маршрута.
 		"/users/{id}",
-		// Передаём функцию обновления пользователя как задание для обёртки.
-		func(w http.ResponseWriter, r *http.Request) {
-			// Вызываем существующий обработчик с доступом к БД.
-			updateUserHandler(w, r, pool)
-		},
+		// Изменять профиль может только его владелец.
+		requireOwnerMiddleware(signingKey,
+			// Передаём функцию обновления пользователя как задание для обёртки.
+			func(w http.ResponseWriter, r *http.Request) {
+				// Вызываем существующий обработчик с доступом к БД.
+				updateUserHandler(w, r, pool)
+			},
+		),
 	))
 	http.HandleFunc("/health/", healthHandler)
 	http.Handle("GET /metrics", promhttp.Handler())

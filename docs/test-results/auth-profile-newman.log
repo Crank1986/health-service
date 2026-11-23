@@ -1,0 +1,197 @@
+newman
+
+OTUS Homework 7 - Authentication and Profile
+
+→ 01 - Register user 1
+  POST http://arch.homework/users/register [201 Created, 268B, 254ms]
+  ┌
+  │ 'REQUEST:', 'POST', 'http://arch.homework/users/register'
+  │ 'REQUEST BODY:', '{\n' +
+  │   '  "name": "User One20df57a4-09d1-436e-ae24-589ce5fa806b",\n' +
+  │   '  "email": "user1-20df57a4-09d1-436e-ae24-589ce5fa806b@example.com",\n' +
+  │   '  "password": "<hidden>"\n' +
+  │   '}'
+  │ 'RESPONSE STATUS:', 201
+  │ 'RESPONSE BODY:', '{\n  "id": 5341,\n  "name": "User One20df57a4-09d1-436e-ae24-589ce5fa806b",\n  "email": "user1-20df57a4-09d1-436e-ae2
+  │ 4-589ce5fa806b@example.com"\n}'
+  └
+  ✓  Регистрация возвращает 201
+  ✓  Получен положительный целочисленный ID
+  ✓  Имя и email совпадают с отправленными
+  ✓  Пароль и хеш отсутствуют в ответе
+
+→ 02 - Get profile without login
+  GET http://arch.homework/users/5341 [401 Unauthorized, 238B, 16ms]
+  ┌
+  │ 'REQUEST:', 'GET', 'http://arch.homework/users/5341'
+  │ 'REQUEST BODY:', ''
+  │ 'RESPONSE STATUS:', 401
+  │ 'RESPONSE BODY:', 'Требуется вход\n'
+  └
+  ✓  Без входа чтение профиля запрещено: 401
+  ✓  Сервер запрашивает Bearer-токен
+  ✓  Получено сообщение об отсутствии входа
+
+→ 03 - Update profile without login
+  PATCH http://arch.homework/users/5341 [401 Unauthorized, 238B, 6ms]
+  ┌
+  │ 'REQUEST:', 'PATCH', 'http://arch.homework/users/5341'
+  │ 'REQUEST BODY:', '{\n  "name": "Unauthorized change"\n}'
+  │ 'RESPONSE STATUS:', 401
+  │ 'RESPONSE BODY:', 'Требуется вход\n'
+  └
+  ✓  Без входа изменение профиля запрещено: 401
+  ✓  Сервер запрашивает Bearer-токен
+  ✓  Получено сообщение об отсутствии входа
+
+→ 04 - Login user 1
+  POST http://arch.homework/users/login [200 OK, 414B, 218ms]
+  ┌
+  │ 'REQUEST:', 'POST', 'http://arch.homework/users/login'
+  │ 'REQUEST BODY:', '{\n  "email": "user1-20df57a4-09d1-436e-ae24-589ce5fa806b@example.com",\n  "password": "<hidden>"\n}'
+  │ 'RESPONSE STATUS:', 200
+  │ 'RESPONSE BODY:', '{\n  "access_token": "<hidden>",\n  "token_type": "Bearer"\n}'
+  └
+  ✓  Вход возвращает 200
+  ✓  Получен непустой токен доступа
+  ✓  Тип токена - Bearer
+  ✓  Ответ запрещено сохранять в кеше
+
+→ 05 - Get own profile
+  GET http://arch.homework/users/5341 [200 OK, 263B, 5ms]
+  ┌
+  │ 'REQUEST:', 'GET', 'http://arch.homework/users/5341'
+  │ 'REQUEST BODY:', ''
+  │ 'RESPONSE STATUS:', 200
+  │ 'RESPONSE BODY:', '{\n  "id": 5341,\n  "name": "User One20df57a4-09d1-436e-ae24-589ce5fa806b",\n  "email": "user1-20df57a4-09d1-436e-ae2
+  │ 4-589ce5fa806b@example.com"\n}'
+  └
+  ✓  Владелец получает профиль: 200
+  ✓  Получен профиль первого пользователя
+  ✓  Попытка изменения без входа не изменила имя
+  ✓  Пароль и хеш отсутствуют в ответе
+
+→ 06 - Update own profile
+  PATCH http://arch.homework/users/5341 [200 OK, 271B, 6ms]
+  ┌
+  │ 'REQUEST:', 'PATCH', 'http://arch.homework/users/5341'
+  │ 'REQUEST BODY:', '{\n  "name": "User One20df57a4-09d1-436e-ae24-589ce5fa806b Updated"\n}'
+  │ 'RESPONSE STATUS:', 200
+  │ 'RESPONSE BODY:', '{\n' +
+  │   '  "id": 5341,\n' +
+  │   '  "name": "User One20df57a4-09d1-436e-ae24-589ce5fa806b Updated",\n' +
+  │   '  "email": "user1-20df57a4-09d1-436e-ae24-589ce5fa806b@example.com"\n' +
+  │   '}'
+  └
+  ✓  Владелец изменяет профиль: 200
+  ✓  Имя обновлено
+  ✓  ID и email сохранились
+  ✓  Пароль и хеш отсутствуют в ответе
+
+→ 07 - Get updated profile
+  GET http://arch.homework/users/5341 [200 OK, 271B, 4ms]
+  ┌
+  │ 'REQUEST:', 'GET', 'http://arch.homework/users/5341'
+  │ 'REQUEST BODY:', ''
+  │ 'RESPONSE STATUS:', 200
+  │ 'RESPONSE BODY:', '{\n' +
+  │   '  "id": 5341,\n' +
+  │   '  "name": "User One20df57a4-09d1-436e-ae24-589ce5fa806b Updated",\n' +
+  │   '  "email": "user1-20df57a4-09d1-436e-ae24-589ce5fa806b@example.com"\n' +
+  │   '}'
+  └
+  ✓  Чтение обновлённого профиля возвращает 200
+  ✓  Новое имя сохранилось
+  ✓  ID и email сохранились
+  ✓  Пароль и хеш отсутствуют в ответе
+
+→ 08 - Register user 2
+  POST http://arch.homework/users/register [201 Created, 269B, 229ms]
+  ┌
+  │ 'REQUEST:', 'POST', 'http://arch.homework/users/register'
+  │ 'REQUEST BODY:', '{\n' +
+  │   '  "name": "User Two d14c82c3-5d58-4aaf-b2c3-777d949943a9",\n' +
+  │   '  "email": "user2-d14c82c3-5d58-4aaf-b2c3-777d949943a9@example.com",\n' +
+  │   '  "password": "<hidden>"\n' +
+  │   '}'
+  │ 'RESPONSE STATUS:', 201
+  │ 'RESPONSE BODY:', '{\n  "id": 5342,\n  "name": "User Two d14c82c3-5d58-4aaf-b2c3-777d949943a9",\n  "email": "user2-d14c82c3-5d58-4aaf-b2
+  │ c3-777d949943a9@example.com"\n}'
+  └
+  ✓  Регистрация второго пользователя возвращает 201
+  ✓  Получен положительный целочисленный ID
+  ✓  Создан другой пользователь
+  ✓  Имя и email совпадают с отправленными
+  ✓  Пароль и хеш отсутствуют в ответе
+
+→ 09 - Login user 2
+  POST http://arch.homework/users/login [200 OK, 414B, 134ms]
+  ┌
+  │ 'REQUEST:', 'POST', 'http://arch.homework/users/login'
+  │ 'REQUEST BODY:', '{\n  "email": "user2-d14c82c3-5d58-4aaf-b2c3-777d949943a9@example.com",\n  "password": "<hidden>"\n}'
+  │ 'RESPONSE STATUS:', 200
+  │ 'RESPONSE BODY:', '{\n  "access_token": "<hidden>",\n  "token_type": "Bearer"\n}'
+  └
+  ✓  Вход второго пользователя возвращает 200
+  ✓  Получен непустой токен доступа
+  ✓  Тип токена - Bearer
+  ✓  Ответ запрещено сохранять в кеше
+
+→ 10 - Get another user's profile
+  GET http://arch.homework/users/5341 [403 Forbidden, 242B, 3ms]
+  ┌
+  │ 'REQUEST:', 'GET', 'http://arch.homework/users/5341'
+  │ 'REQUEST BODY:', ''
+  │ 'RESPONSE STATUS:', 403
+  │ 'RESPONSE BODY:', 'Доступ к чужому профилю запрещён\n'
+  └
+  ✓  Чтение чужого профиля запрещено: 403
+  ✓  Получено сообщение о запрете доступа
+
+→ 11 - Update another user's profile
+  PATCH http://arch.homework/users/5341 [403 Forbidden, 242B, 3ms]
+  ┌
+  │ 'REQUEST:', 'PATCH', 'http://arch.homework/users/5341'
+  │ 'REQUEST BODY:', '{\n  "name": "Changed by second user"\n}'
+  │ 'RESPONSE STATUS:', 403
+  │ 'RESPONSE BODY:', 'Доступ к чужому профилю запрещён\n'
+  └
+  ✓  Изменение чужого профиля запрещено: 403
+  ✓  Получено сообщение о запрете доступа
+
+→ 12 - Verify profile unchanged
+  GET http://arch.homework/users/5341 [200 OK, 271B, 4ms]
+  ┌
+  │ 'REQUEST:', 'GET', 'http://arch.homework/users/5341'
+  │ 'REQUEST BODY:', ''
+  │ 'RESPONSE STATUS:', 200
+  │ 'RESPONSE BODY:', '{\n' +
+  │   '  "id": 5341,\n' +
+  │   '  "name": "User One20df57a4-09d1-436e-ae24-589ce5fa806b Updated",\n' +
+  │   '  "email": "user1-20df57a4-09d1-436e-ae24-589ce5fa806b@example.com"\n' +
+  │   '}'
+  └
+  ✓  Владелец получает профиль: 200
+  ✓  Запрещённое изменение не повлияло на имя
+  ✓  ID и email первого пользователя сохранились
+  ✓  Пароль и хеш отсутствуют в ответе
+
+┌─────────────────────────┬───────────────────┬──────────────────┐
+│                         │          executed │           failed │
+├─────────────────────────┼───────────────────┼──────────────────┤
+│              iterations │                 1 │                0 │
+├─────────────────────────┼───────────────────┼──────────────────┤
+│                requests │                12 │                0 │
+├─────────────────────────┼───────────────────┼──────────────────┤
+│            test-scripts │                24 │                0 │
+├─────────────────────────┼───────────────────┼──────────────────┤
+│      prerequest-scripts │                 5 │                0 │
+├─────────────────────────┼───────────────────┼──────────────────┤
+│              assertions │                43 │                0 │
+├─────────────────────────┴───────────────────┴──────────────────┤
+│ total run duration: 1133ms                                     │
+├────────────────────────────────────────────────────────────────┤
+│ total data received: 1.5kB (approx)                            │
+├────────────────────────────────────────────────────────────────┤
+│ average response time: 73ms [min: 3ms, max: 254ms, s.d.: 99ms] │
+└────────────────────────────────────────────────────────────────┘

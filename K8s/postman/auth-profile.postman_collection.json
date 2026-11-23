@@ -1,0 +1,588 @@
+{
+  "info": {
+    "_postman_id": "d940fe65-1f5e-4d14-b459-017fa62bcab5",
+    "name": "OTUS Homework 7 - Authentication and Profile",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "_exporter_id": "59388878",
+    "_collection_link": "https://go.postman.co/collection/59388878-d940fe65-1f5e-4d14-b459-017fa62bcab5?source=collection_link"
+  },
+  "item": [
+    {
+      "name": "01 - Register user 1",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Получаем случайный идентификатор для нового пользователя\nconst unique = pm.variables.replaceIn(\"{{$guid}}\");\n\n// Сохраняем данные для регистрации и последующего входа\npm.collectionVariables.set(\"user1_name\", \"User One\" + unique);\npm.collectionVariables.set(\"user1_email\", \"user1-\" + unique + \"@example.com\");\npm.collectionVariables.set(\"user1_password\", \"Password-\" + unique);\n\n// Удаляем результаты предыдущего запуска первого пользователя\npm.collectionVariables.unset(\"user1_id\");\npm.collectionVariables.unset(\"user1_token\");\n"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Регистрация возвращает 201\", function () {\n    pm.response.to.have.status(201);\n});\n\nconst user = pm.response.json();\n\npm.test(\"Получен положительный целочисленный ID\", function () {\n    pm.expect(Number.isInteger(user.id)).to.eql(true);\n    pm.expect(user.id).to.be.above(0); \n});\n\npm.test(\"Имя и email совпадают с отправленными\", function () {\n    pm.expect(user.name).to.eql(pm.collectionVariables.get(\"user1_name\"));\n    pm.expect(user.email).to.eql(pm.collectionVariables.get(\"user1_email\"));\n});\n\npm.test(\"Пароль и хеш отсутствуют в ответе\", function () {\n    pm.expect(user).to.not.have.property(\"password\");\n    pm.expect(user).to.not.have.property(\"password_hash\");\n});\n\n// Сохраняем ID только после успешного ответа с корректным ID.\nif (pm.response.code === 201 && Number.isInteger(user.id) && user.id > 0) {\n    pm.collectionVariables.set(\"user1_id\", user.id);\n}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n    \"name\":\"{{user1_name}}\",\n    \"email\":\"{{user1_email}}\",\n    \"password\":\"{{user1_password}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/users/register",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "users",
+            "register"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "02 - Get profile without login",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Без входа чтение профиля запрещено: 401\", function () {\n    pm.response.to.have.status(401);\n});\n\npm.test(\"Сервер запрашивает Bearer-токен\", function () {\n    pm.expect(pm.response.headers.get(\"WWW-Authenticate\")).to.eql(\"Bearer\");\n});\n\npm.test(\"Получено сообщение об отсутствии входа\", function () {\n    pm.expect(pm.response.text().trim()).to.eql(\"Требуется вход\");\n});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/users/{{user1_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "users",
+            "{{user1_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "03 - Update profile without login",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Без входа изменение профиля запрещено: 401\", function () {\n    pm.response.to.have.status(401);\n});\n\npm.test(\"Сервер запрашивает Bearer-токен\", function () {\n    pm.expect(pm.response.headers.get(\"WWW-Authenticate\")).to.eql(\"Bearer\");\n});\n\npm.test(\"Получено сообщение об отсутствии входа\", function () {\n    pm.expect(pm.response.text().trim()).to.eql(\"Требуется вход\");\n});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "PATCH",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Unauthorized change\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/users/{{user1_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "users",
+            "{{user1_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "04 - Login user 1",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Удаляем старый токен, чтобы не использовать его при ошибке входа.\npm.collectionVariables.unset(\"user1_token\");"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Вход возвращает 200\", function () {\n    pm.response.to.have.status(200);\n});\n\nconst result = pm.response.json();\n\npm.test(\"Получен непустой токен доступа\", function () {\n    pm.expect(result.access_token).to.be.a(\"string\");\n    pm.expect(result.access_token.trim()).to.not.eql(\"\");\n});\n\npm.test(\"Тип токена - Bearer\", function () {\n    pm.expect(result.token_type).to.eql(\"Bearer\");\n});\n\npm.test(\"Ответ запрещено сохранять в кеше\", function () {\n    pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\");\n});\n\n// Сохраняем токен для следующих запросов только после успешного входа.\nif (\n    pm.response.code === 200 &&\n    result.token_type === \"Bearer\" &&\n    typeof result.access_token === \"string\" &&\n    result.access_token.trim() !== \"\"\n) {\n    pm.collectionVariables.set(\"user1_token\", result.access_token);\n}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{user1_email}}\",\n  \"password\": \"{{user1_password}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/users/login",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "users",
+            "login"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "05 - Get own profile",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Владелец получает профиль: 200\", function () {\n    pm.response.to.have.status(200);\n});\n\nconst user = pm.response.json();\n\npm.test(\"Получен профиль первого пользователя\", function () {\n    pm.expect(user.id).to.eql(\n        Number(pm.collectionVariables.get(\"user1_id\"))\n    );\n    pm.expect(user.email).to.eql(\n        pm.collectionVariables.get(\"user1_email\")\n    );\n});\n\npm.test(\"Попытка изменения без входа не изменила имя\", function () {\n    pm.expect(user.name).to.eql(\n        pm.collectionVariables.get(\"user1_name\")\n    );\n});\n\npm.test(\"Пароль и хеш отсутствуют в ответе\", function () {\n    pm.expect(user).to.not.have.property(\"password\");\n    pm.expect(user).to.not.have.property(\"password_hash\");\n});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{user1_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/users/{{user1_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "users",
+            "{{user1_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "06 - Update own profile",
+      "event": [
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Формируем новое имя на основе данных текущего пользователя.\npm.collectionVariables.set(\n    \"user1_updated_name\",\n    pm.collectionVariables.get(\"user1_name\") + \" Updated\"\n);"
+            ]
+          }
+        },
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Владелец изменяет профиль: 200\", function () {\n    pm.response.to.have.status(200);\n});\n\nconst user = pm.response.json();\n\npm.test(\"Имя обновлено\", function () {\n    pm.expect(user.name).to.eql(\n        pm.collectionVariables.get(\"user1_updated_name\")\n    );\n});\n\npm.test(\"ID и email сохранились\", function () {\n    pm.expect(user.id).to.eql(\n        Number(pm.collectionVariables.get(\"user1_id\"))\n    );\n    pm.expect(user.email).to.eql(\n        pm.collectionVariables.get(\"user1_email\")\n    );\n});\n\npm.test(\"Пароль и хеш отсутствуют в ответе\", function () {\n    pm.expect(user).to.not.have.property(\"password\");\n    pm.expect(user).to.not.have.property(\"password_hash\");\n});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{user1_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "PATCH",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"{{user1_updated_name}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/users/{{user1_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "users",
+            "{{user1_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "07 - Get updated profile",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Чтение обновлённого профиля возвращает 200\", function () {\n    pm.response.to.have.status(200);\n});\n\nconst user = pm.response.json();\n\npm.test(\"Новое имя сохранилось\", function () {\n    pm.expect(user.name).to.eql(\n        pm.collectionVariables.get(\"user1_updated_name\")\n    );\n});\n\npm.test(\"ID и email сохранились\", function () {\n    pm.expect(user.id).to.eql(\n        Number(pm.collectionVariables.get(\"user1_id\"))\n    );\n    pm.expect(user.email).to.eql(\n        pm.collectionVariables.get(\"user1_email\")\n    );\n});\n\npm.test(\"Пароль и хеш отсутствуют в ответе\", function () {\n    pm.expect(user).to.not.have.property(\"password\");\n    pm.expect(user).to.not.have.property(\"password_hash\");\n});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{user1_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/users/{{user1_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "users",
+            "{{user1_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "08 - Register user 2",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Регистрация второго пользователя возвращает 201\", function () {\n    pm.response.to.have.status(201);\n});\n\nconst user = pm.response.json();\n\npm.test(\"Получен положительный целочисленный ID\", function () {\n    pm.expect(Number.isInteger(user.id)).to.eql(true);\n    pm.expect(user.id).to.be.above(0);\n});\n\npm.test(\"Создан другой пользователь\", function () {\n    pm.expect(user.id).to.not.eql(\n        Number(pm.collectionVariables.get(\"user1_id\"))\n    );\n});\n\npm.test(\"Имя и email совпадают с отправленными\", function () {\n    pm.expect(user.name).to.eql(pm.collectionVariables.get(\"user2_name\"));\n    pm.expect(user.email).to.eql(pm.collectionVariables.get(\"user2_email\"));\n});\n\npm.test(\"Пароль и хеш отсутствуют в ответе\", function () {\n    pm.expect(user).to.not.have.property(\"password\");\n    pm.expect(user).to.not.have.property(\"password_hash\");\n});\n\nif (pm.response.code === 201 && Number.isInteger(user.id) && user.id > 0) {\n    pm.collectionVariables.set(\"user2_id\", user.id);\n}"
+            ]
+          }
+        },
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "// Создаём случайные данные второго пользователя.\nconst unique = pm.variables.replaceIn(\"{{$guid}}\");\n\npm.collectionVariables.set(\"user2_name\", \"User Two \" + unique);\npm.collectionVariables.set(\"user2_email\", \"user2-\" + unique + \"@example.com\");\npm.collectionVariables.set(\"user2_password\", \"Password-\" + unique);\n\n// Удаляем результаты его предыдущего запуска.\npm.collectionVariables.unset(\"user2_id\");\npm.collectionVariables.unset(\"user2_token\");"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"{{user2_name}}\",\n  \"email\": \"{{user2_email}}\",\n  \"password\": \"{{user2_password}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/users/register",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "users",
+            "register"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "09 - Login user 2",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Вход второго пользователя возвращает 200\", function () {\n    pm.response.to.have.status(200);\n});\n\nconst result = pm.response.json();\n\npm.test(\"Получен непустой токен доступа\", function () {\n    pm.expect(result.access_token).to.be.a(\"string\");\n    pm.expect(result.access_token.trim()).to.not.eql(\"\");\n});\n\npm.test(\"Тип токена - Bearer\", function () {\n    pm.expect(result.token_type).to.eql(\"Bearer\");\n});\n\npm.test(\"Ответ запрещено сохранять в кеше\", function () {\n    pm.expect(pm.response.headers.get(\"Cache-Control\")).to.eql(\"no-store\");\n});\n\nif (\n    pm.response.code === 200 &&\n    result.token_type === \"Bearer\" &&\n    typeof result.access_token === \"string\" &&\n    result.access_token.trim() !== \"\"\n) {\n    pm.collectionVariables.set(\"user2_token\", result.access_token);\n}"
+            ]
+          }
+        },
+        {
+          "listen": "prerequest",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.collectionVariables.unset(\"user2_token\");"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{user2_email}}\",\n  \"password\": \"{{user2_password}}\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/users/login",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "users",
+            "login"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "10 - Get another user's profile",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Чтение чужого профиля запрещено: 403\", function () {\n    pm.response.to.have.status(403);\n});\n\npm.test(\"Получено сообщение о запрете доступа\", function () {\n    pm.expect(pm.response.text().trim()).to.eql(\n        \"Доступ к чужому профилю запрещён\"\n    );\n});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{user2_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/users/{{user1_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "users",
+            "{{user1_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "11 - Update another user's profile",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Изменение чужого профиля запрещено: 403\", function () {\n    pm.response.to.have.status(403);\n});\n\npm.test(\"Получено сообщение о запрете доступа\", function () {\n    pm.expect(pm.response.text().trim()).to.eql(\n        \"Доступ к чужому профилю запрещён\"\n    );\n});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{user2_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "PATCH",
+        "header": [],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"name\": \"Changed by second user\"\n}",
+          "options": {
+            "raw": {
+              "language": "json"
+            }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/users/{{user1_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "users",
+            "{{user1_id}}"
+          ]
+        }
+      },
+      "response": []
+    },
+    {
+      "name": "12 - Verify profile unchanged",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test(\"Владелец получает профиль: 200\", function () {\n    pm.response.to.have.status(200);\n});\n\nconst user = pm.response.json();\n\npm.test(\"Запрещённое изменение не повлияло на имя\", function () {\n    pm.expect(user.name).to.eql(\n        pm.collectionVariables.get(\"user1_updated_name\")\n    );\n});\n\npm.test(\"ID и email первого пользователя сохранились\", function () {\n    pm.expect(user.id).to.eql(\n        Number(pm.collectionVariables.get(\"user1_id\"))\n    );\n    pm.expect(user.email).to.eql(\n        pm.collectionVariables.get(\"user1_email\")\n    );\n});\n\npm.test(\"Пароль и хеш отсутствуют в ответе\", function () {\n    pm.expect(user).to.not.have.property(\"password\");\n    pm.expect(user).to.not.have.property(\"password_hash\");\n});"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{user1_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/users/{{user1_id}}",
+          "host": [
+            "{{baseUrl}}"
+          ],
+          "path": [
+            "users",
+            "{{user1_id}}"
+          ]
+        }
+      },
+      "response": []
+    }
+  ],
+  "event": [
+    {
+      "listen": "test",
+      "script": {
+        "type": "text/javascript",
+        "exec": [
+          "// Подготавливаем тело для вывода, скрывая пароль и JWT.\nfunction displayBody(text) {\n    try {\n        return JSON.stringify(JSON.parse(text), function (key, value) {\n            if (key === \"password\" || key === \"access_token\") {\n                return \"<hidden>\";\n            }\n            return value;\n        }, 2);\n    } catch (error) {\n        // Ответы 401/403 содержат обычный текст, а не JSON.\n        return text;\n    }\n}\n\n// Подставляем значения переменных в URL и тело запроса.\nconst requestUrl = pm.variables.replaceIn(pm.request.url.toString());\nconst requestBody = pm.request.body && pm.request.body.raw\n    ? pm.variables.replaceIn(pm.request.body.raw)\n    : \"\";\n\nconsole.log(\"REQUEST:\", pm.request.method, requestUrl);\nconsole.log(\"REQUEST BODY:\", displayBody(requestBody));\nconsole.log(\"RESPONSE STATUS:\", pm.response.code);\nconsole.log(\"RESPONSE BODY:\", displayBody(pm.response.text()));"
+        ]
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://arch.homework"
+    },
+    {
+      "key": "user1_name",
+      "value": ""
+    },
+    {
+      "key": "user1_email",
+      "value": ""
+    },
+    {
+      "key": "user1_id",
+      "value": ""
+    },
+    {
+      "key": "user1_password",
+      "value": ""
+    },
+    {
+      "key": "user1_token",
+      "secret": true
+    },
+    {
+      "key": "user1_updated_name",
+      "value": ""
+    },
+    {
+      "key": "user2_name",
+      "value": ""
+    },
+    {
+      "key": "user2_email",
+      "value": ""
+    },
+    {
+      "key": "user2_password",
+      "value": ""
+    },
+    {
+      "key": "user2_id",
+      "value": ""
+    },
+    {
+      "key": "user2_token",
+      "secret": true
+    }
+  ]
+}
