@@ -1,0 +1,144 @@
+apiVersion: 1
+groups:
+    - orgId: 1
+      name: health-service-alerts
+      folder: OTUS Health Service
+      interval: 30s
+      rules:
+        - uid: eg3ogugxlr2tcb
+          title: Health Service - высокая задержка ingress
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: prometheus
+              model:
+                editorMode: code
+                expr: |-
+                    histogram_quantile(
+                      0.95,
+                      sum by (le) (
+                        rate(nginx_ingress_controller_request_duration_seconds_bucket{
+                          namespace="hs",
+                          ingress=~"health-ingress|otusapp-ingress"
+                        }[5m])
+                      )
+                    )
+                instant: true
+                intervalMs: 1000
+                legendFormat: __auto
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              queryType: expression
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0.2
+                        type: gt
+                      operator:
+                        type: and
+                      query:
+                        params:
+                            - C
+                      reducer:
+                        params: []
+                        type: last
+                      type: query
+                datasource:
+                    type: __expr__
+                    uid: __expr__
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: NoData
+          execErrState: Error
+          for: 1m
+          annotations:
+            description: |-
+                p95 рассчитывается по запросам за последние 5 минут.
+                Правило проверяется каждые 30 секунд.
+                Превышение порога должно сохраняться 1 минуту.
+            summary: p95 времени ответа Health Service через ingress превышает 200 мс.
+          isPaused: false
+          notification_settings:
+            receiver: empty
+        - uid: bg3ohpzr72sjkd
+          title: Health Service - ошибки 5xx на ingress
+          condition: C
+          data:
+            - refId: A
+              relativeTimeRange:
+                from: 600
+                to: 0
+              datasourceUid: prometheus
+              model:
+                editorMode: code
+                expr: |-
+                    sum(
+                      rate(nginx_ingress_controller_requests{
+                        namespace="hs",
+                        ingress=~"health-ingress|otusapp-ingress",
+                        status=~"5.."
+                      }[5m])
+                    )
+                    or
+                    (
+                      0 * sum(
+                        rate(nginx_ingress_controller_requests{
+                          namespace="hs",
+                          ingress=~"health-ingress|otusapp-ingress"
+                        }[5m])
+                      )
+                    )
+                instant: true
+                intervalMs: 1000
+                legendFormat: __auto
+                maxDataPoints: 43200
+                range: false
+                refId: A
+            - refId: C
+              queryType: expression
+              datasourceUid: __expr__
+              model:
+                conditions:
+                    - evaluator:
+                        params:
+                            - 0.1
+                        type: gt
+                      operator:
+                        type: and
+                      query:
+                        params:
+                            - C
+                      reducer:
+                        params: []
+                        type: last
+                      type: query
+                datasource:
+                    type: __expr__
+                    uid: __expr__
+                expression: A
+                intervalMs: 1000
+                maxDataPoints: 43200
+                refId: C
+                type: threshold
+          noDataState: NoData
+          execErrState: Error
+          for: 1m
+          annotations:
+            description: |-
+                Средняя частота ответов 5xx за последние 5 минут превышает
+                0.1 ошибки в секунду. Проверка выполняется каждые 30 секунд.
+                Превышение должно сохраняться 1 минуту.
+            summary: Повышенная частота ошибок 5xx у Health Service через ingress.
+          isPaused: false
+          notification_settings:
+            receiver: empty

@@ -1,0 +1,27 @@
+# Тип ресурса, установленный вместе с Prometheus Operator.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: health-service
+  namespace: monitoring
+  # Связываем монитор с установленным Helm-релизом monitoring.
+  labels:
+    release: monitoring
+spec:
+  # Ищем Service приложения в namespace hs.
+  namespaceSelector:
+    matchNames:
+      - hs
+
+  # Выбираем Service по его metadata.labels.
+  selector:
+    matchLabels:
+      app: health-service
+
+  endpoints:
+    # Имя порта Service, а не номер порта контейнера.
+    - port: http
+      # Маршрут, который мы добавили в Go-приложение.
+      path: /metrics
+      # Забираем показания каждые 15 секунд.
+      interval: 15s

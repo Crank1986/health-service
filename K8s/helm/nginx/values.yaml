@@ -1,0 +1,12 @@
+controller:
+  metrics:
+    # Включаем выдачу метрик контроллером ingress.
+    enabled: true
+
+    serviceMonitor:
+      # Просим Helm создать ServiceMonitor для этих метрик.
+      enabled: true
+
+      # Метка для выбора монитора нашим Prometheus.
+      additionalLabels:
+        release: monitoring
