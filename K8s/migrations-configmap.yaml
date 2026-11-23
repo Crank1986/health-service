@@ -10,3 +10,6 @@ data:
         name VARCHAR(200) NOT NULL,
         email VARCHAR(200) NOT NULL UNIQUE
     );
+  002_add_password_hash.sql: |-
+    ALTER TABLE users
+      ADD COLUMN password_hash TEXT;

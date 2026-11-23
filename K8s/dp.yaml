@@ -23,7 +23,7 @@ spec:
     spec:
       containers:
       - name: health-app
-        image: artemprotchenko/myapp:logging-v2
+        image: artemprotchenko/myapp:auth-owner-v1
         envFrom:
           - configMapRef:
               name: users-app-config
@@ -38,6 +38,11 @@ spec:
               secretKeyRef:
                 name: postgres-credentials
                 key: CUSTOM_PASSWORD
+          - name: JWT_SIGNING_KEY
+            valueFrom:
+              secretKeyRef:
+                name: jwt-signing
+                key: JWT_SIGNING_KEY
         ports:
         - containerPort: 8000
         livenessProbe:
